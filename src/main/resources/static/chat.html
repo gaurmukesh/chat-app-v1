@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chat App</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .container {
+    background: white;
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    width: 95%;
+    max-width: 800px;
+    overflow: hidden;
+  }
+
+  /* Auth Screen */
+  .auth-screen { padding: 40px; text-align: center; }
+  .auth-screen h1 { color: #667eea; margin-bottom: 10px; font-size: 28px; }
+  .auth-screen p { color: #666; margin-bottom: 30px; }
+
+  .tab-bar { display: flex; margin-bottom: 20px; border-bottom: 2px solid #e0e0e0; }
+  .tab-bar button {
+    flex: 1; padding: 12px; border: none; background: none;
+    font-size: 16px; cursor: pointer; color: #666; font-weight: 500;
+    border-bottom: 2px solid transparent; margin-bottom: -2px;
+  }
+  .tab-bar button.active { color: #667eea; border-bottom-color: #667eea; }
+
+  .input-group { margin-bottom: 20px; text-align: left; }
+  .input-group label { display: block; color: #333; margin-bottom: 8px; font-weight: 500; }
+  .input-group input {
+    width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0;
+    border-radius: 10px; font-size: 16px; transition: border-color 0.3s;
+  }
+  .input-group input:focus { outline: none; border-color: #667eea; }
+
+  .btn {
+    width: 100%; padding: 14px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white; border: none; border-radius: 10px;
+    font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn:active { transform: translateY(0); }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  .error-msg { color: #f44336; font-size: 14px; margin-top: 10px; }
+
+  /* Chat Screen */
+  .chat-screen { display: none; height: 650px; flex-direction: column; }
+
+  .chat-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white; padding: 15px 20px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .chat-header h2 { font-size: 18px; }
+
+  .header-actions { display: flex; gap: 8px; }
+  .header-btn {
+    background: rgba(255,255,255,0.2); border: 1px solid white;
+    color: white; padding: 6px 14px; border-radius: 8px;
+    cursor: pointer; font-size: 13px;
+  }
+  .header-btn:hover { background: rgba(255,255,255,0.3); }
+
+  .chat-layout { display: flex; flex: 1; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 200px; background: #f8f8f8; border-right: 1px solid #e0e0e0;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 12px; font-weight: 600; color: #333;
+    border-bottom: 1px solid #e0e0e0; font-size: 14px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .sidebar-header button {
+    background: #667eea; color: white; border: none;
+    border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-size: 16px;
+  }
+  .sidebar-list { flex: 1; overflow-y: auto; }
+  .sidebar-item {
+    padding: 10px 12px; cursor: pointer; font-size: 13px;
+    border-bottom: 1px solid #eee; transition: background 0.2s;
+  }
+  .sidebar-item:hover { background: #eee; }
+  .sidebar-item.active { background: #667eea; color: white; }
+
+  .chat-main { flex: 1; display: flex; flex-direction: column; }
+
+  .status { text-align: center; padding: 6px; font-size: 12px; color: #666; }
+  .status.connected { color: #4CAF50; }
+  .status.disconnected { color: #f44336; }
+
+  .chat-body { flex: 1; overflow-y: auto; padding: 15px; background: #f5f5f5; }
+
+  .message {
+    margin-bottom: 12px; padding: 10px 14px;
+    border-radius: 12px; max-width: 75%; word-wrap: break-word;
+  }
+  .message.sent { background: #667eea; color: white; margin-left: auto; text-align: right; }
+  .message.received { background: white; color: #333; margin-right: auto; }
+  .message-meta { font-size: 11px; opacity: 0.7; margin-top: 4px; }
+  .message.sent .message-meta::after { content: ' \2713'; }
+  .message.sent.read .message-meta::after { content: ' \2713\2713'; color: #90EE90; }
+
+  .chat-input-area { padding: 12px; background: white; border-top: 1px solid #e0e0e0; }
+  .input-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .input-row input {
+    flex: 1; padding: 10px 12px; border: 2px solid #e0e0e0;
+    border-radius: 10px; font-size: 14px;
+  }
+  .input-row input:focus { outline: none; border-color: #667eea; }
+
+  .send-btn {
+    padding: 10px 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600;
+  }
+  .send-btn:hover { opacity: 0.9; }
+
+  .hidden { display: none !important; }
+
+  /* Modal */
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: white; border-radius: 16px; padding: 30px;
+    width: 90%; max-width: 400px; max-height: 80vh; overflow-y: auto;
+  }
+  .modal h3 { margin-bottom: 20px; color: #333; }
+  .modal .input-group { margin-bottom: 15px; }
+  .modal .btn { margin-top: 10px; }
+
+  /* Online status dot */
+  .status-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.15);
+  }
+  .status-dot.online { background: #4CAF50; box-shadow: 0 0 4px #4CAF50; }
+  .status-dot.offline { background: #bbb; }
+
+  /* Unread badge */
+  .unread-badge {
+    background: #f44336; color: white; border-radius: 10px;
+    padding: 1px 6px; font-size: 11px; font-weight: 600;
+    float: right; min-width: 18px; text-align: center;
+  }
+
+  /* Typing indicator */
+  .typing-indicator {
+    padding: 4px 15px; font-size: 12px; color: #888;
+    font-style: italic; min-height: 20px;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <!-- Auth Screen -->
+    <div class="auth-screen" id="authScreen">
+      <h1>Chat App</h1>
+      <p>Login or create a new account</p>
+
+      <div class="tab-bar">
+        <button id="loginTab" class="active" onclick="switchTab('login')">Login</button>
+        <button id="registerTab" onclick="switchTab('register')">Register</button>
+      </div>
+
+      <div id="loginForm">
+        <div class="input-group">
+          <label for="loginUsername">Username</label>
+          <input type="text" id="loginUsername" placeholder="Enter username" autofocus>
+        </div>
+        <div class="input-group">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" placeholder="Enter password"
+                 onkeypress="if(event.key==='Enter') doLogin()">
+        </div>
+        <button class="btn" onclick="doLogin()">Login</button>
+      </div>
+
+      <div id="registerForm" class="hidden">
+        <div class="input-group">
+          <label for="regUsername">Username</label>
+          <input type="text" id="regUsername" placeholder="Choose a username">
+        </div>
+        <div class="input-group">
+          <label for="regPassword">Password</label>
+          <input type="password" id="regPassword" placeholder="Choose a password"
+                 onkeypress="if(event.key==='Enter') doRegister()">
+        </div>
+        <button class="btn" onclick="doRegister()">Register</button>
+      </div>
+
+      <div id="authError" class="error-msg"></div>
+    </div>
+
+    <!-- Chat Screen -->
+    <div class="chat-screen" id="chatScreen">
+      <div class="chat-header">
+        <h2 id="userDisplay">Chat</h2>
+        <div class="header-actions">
+          <button class="header-btn" onclick="showCreateGroupModal()">New Group</button>
+          <button class="header-btn" onclick="logout()">Logout</button>
+        </div>
+      </div>
+
+      <div class="chat-layout">
+        <!-- Sidebar -->
+        <div class="sidebar">
+          <div class="sidebar-header">
+            Groups
+            <button onclick="showCreateGroupModal()">+</button>
+          </div>
+          <div class="sidebar-list" id="groupList">
+          </div>
+          <div class="sidebar-header">Users</div>
+          <div class="sidebar-list" id="userList"></div>
+        </div>
+
+        <div class="chat-main">
+          <div class="status" id="status">Connecting...</div>
+          <div class="chat-body" id="chatBody"></div>
+
+          <div class="chat-input-area">
+            <div class="typing-indicator" id="typingIndicator"></div>
+            <div class="input-row" id="receiverRow">
+              <input type="text" id="toUserId" placeholder="Receiver ID">
+            </div>
+            <div class="input-row">
+              <input type="text" id="messageInput" placeholder="Type a message..."
+                     oninput="sendTypingEvent()"
+                     onkeypress="if(event.key==='Enter') sendMessage()">
+              <button class="send-btn" onclick="sendMessage()">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Group Modal -->
+  <div class="modal-overlay" id="createGroupModal">
+    <div class="modal">
+      <h3>Create Group</h3>
+      <div class="input-group">
+        <label for="groupName">Group Name</label>
+        <input type="text" id="groupName" placeholder="Enter group name">
+      </div>
+      <div class="input-group">
+        <label for="groupMembers">Member IDs (comma-separated)</label>
+        <input type="text" id="groupMembers" placeholder="e.g., 2, 3, 4">
+      </div>
+      <button class="btn" onclick="createGroup()">Create</button>
+      <button class="btn" style="background:#ccc;color:#333;margin-top:8px" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+  <script>
+    let stompClient = null;
+    let currentUserId = null;
+    let accessToken = null;
+    let refreshToken = null;
+    let currentMode = 'direct'; // 'direct' or group ID
+    let selectedUserId = null; // selected user for DM
+    let userGroups = [];
+    let allUsers = [];
+    let userPresence = {};   // {userId: true/false}
+    let unreadCounts = {};   // {senderId: count}
+    let lastTypingSent = 0;
+    let typingTimeout = null;
+    let presenceInterval = null;
+
+    /* ---------- AUTH TAB SWITCH ---------- */
+    function switchTab(tab) {
+      document.getElementById('loginTab').classList.toggle('active', tab === 'login');
+      document.getElementById('registerTab').classList.toggle('active', tab === 'register');
+      document.getElementById('loginForm').classList.toggle('hidden', tab !== 'login');
+      document.getElementById('registerForm').classList.toggle('hidden', tab !== 'register');
+      document.getElementById('authError').textContent = '';
+    }
+
+    /* ---------- REGISTER ---------- */
+    async function doRegister() {
+      const username = document.getElementById('regUsername').value.trim();
+      const password = document.getElementById('regPassword').value.trim();
+      if (!username || !password) { showAuthError('Please fill in all fields'); return; }
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          handleAuthSuccess(data, username);
+        } else if (res.status === 409) {
+          showAuthError('Username already taken');
+        } else {
+          showAuthError('Registration failed');
+        }
+      } catch (e) {
+        showAuthError('Connection error');
+      }
+    }
+
+    /* ---------- LOGIN ---------- */
+    async function doLogin() {
+      const username = document.getElementById('loginUsername').value.trim();
+      const password = document.getElementById('loginPassword').value.trim();
+      if (!username || !password) { showAuthError('Please fill in all fields'); return; }
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          handleAuthSuccess(data, username);
+        } else {
+          showAuthError('Invalid username or password');
+        }
+      } catch (e) {
+        showAuthError('Connection error');
+      }
+    }
+
+    function handleAuthSuccess(data, username) {
+      accessToken = data.accessToken;
+      refreshToken = data.refreshToken;
+      localStorage.setItem('accessToken', accessToken);
+      localStorage.setItem('refreshToken', refreshToken);
+      localStorage.setItem('username', username);
+      currentUserId = getUserIdFromToken(accessToken);
+      showChatScreen(username);
+      connect();
+      loadGroups();
+      loadUsers().then(() => { loadPresence(); loadUnreadCounts(); });
+      startPresencePolling();
+    }
+
+    function showAuthError(msg) {
+      document.getElementById('authError').textContent = msg;
+    }
+
+    /* ---------- LOGOUT ---------- */
+    function logout() {
+      sendGoOffline();
+      if (stompClient) stompClient.disconnect();
+      if (presenceInterval) clearInterval(presenceInterval);
+      localStorage.clear();
+      accessToken = null; refreshToken = null; currentUserId = null;
+      userGroups = []; allUsers = []; currentMode = 'direct'; selectedUserId = null;
+      document.getElementById('chatBody').innerHTML = '';
+      document.getElementById('authScreen').classList.remove('hidden');
+      document.getElementById('chatScreen').classList.add('hidden');
+      document.getElementById('chatScreen').style.display = '';
+    }
+
+    /* ---------- UI SWITCHING ---------- */
+    function showChatScreen(username) {
+      document.getElementById('authScreen').classList.add('hidden');
+      document.getElementById('chatScreen').classList.remove('hidden');
+      document.getElementById('chatScreen').style.display = 'flex';
+      document.getElementById('userDisplay').textContent = username || 'User ' + currentUserId;
+    }
+
+    /* ---------- TOKEN HELPERS ---------- */
+    function getUserIdFromToken(token) {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return Number(payload.sub);
+    }
+
+    async function refreshAccessToken() {
+      if (!refreshToken) refreshToken = localStorage.getItem('refreshToken');
+      try {
+        const res = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: refreshToken
+        });
+        if (res.ok) {
+          const data = await res.json();
+          accessToken = data.accessToken;
+          localStorage.setItem('accessToken', accessToken);
+          return true;
+        } else {
+          logout();
+          return false;
+        }
+      } catch (e) { return false; }
+    }
+
+    /* ---------- WEBSOCKET CONNECTION ---------- */
+    function connect() {
+      updateStatus('Connecting...', false);
+      const socket = new SockJS('/ws');
+      stompClient = Stomp.over(socket);
+      stompClient.debug = null; // suppress debug logs
+
+      stompClient.connect(
+        { Authorization: 'Bearer ' + accessToken },
+        () => {
+          updateStatus('Connected', true);
+          sendHeartbeat();
+
+          // Subscribe to direct messages
+          stompClient.subscribe('/topic/messages/' + currentUserId, payload => {
+            const msg = JSON.parse(payload.body);
+            if (currentMode === 'direct' && (selectedUserId === null || msg.senderId === selectedUserId)) {
+              showMessage(msg.content, msg.messageId, msg.senderId, false);
+              stompClient.send('/app/read', {}, JSON.stringify({
+                messageId: msg.messageId, senderId: msg.senderId, receiverId: currentUserId
+              }));
+            } else {
+              // Message from someone we're not currently chatting with — increment unread
+              unreadCounts[msg.senderId] = (unreadCounts[msg.senderId] || 0) + 1;
+              renderUserList();
+            }
+          });
+
+          // Subscribe to typing indicator
+          stompClient.subscribe('/topic/typing/' + currentUserId, payload => {
+            const senderId = JSON.parse(payload.body);
+            if (currentMode === 'direct' && selectedUserId == senderId) {
+              const senderUser = allUsers.find(u => u.userId == senderId);
+              const name = senderUser ? senderUser.username : 'User ' + senderId;
+              showTypingIndicator(name);
+            }
+          });
+
+          // Subscribe to presence updates
+          stompClient.subscribe('/topic/presence', payload => {
+            const data = JSON.parse(payload.body);
+            userPresence[data.userId] = data.online;
+            renderUserList();
+          });
+
+          // Subscribe to read receipts
+          stompClient.subscribe('/topic/read/' + currentUserId, payload => {
+            try {
+              const receipt = JSON.parse(payload.body);
+              markMessageAsRead(receipt.messageId);
+            } catch (e) {}
+          });
+
+          // Subscribe to group topics
+          subscribeToGroups();
+
+          // Fetch offline messages
+          fetchOfflineMessages();
+        },
+        async error => {
+          updateStatus('Disconnected', false);
+          const refreshed = await refreshAccessToken();
+          if (refreshed) setTimeout(connect, 2000);
+        }
+      );
+    }
+
+    function subscribeToGroups() {
+      userGroups.forEach(g => {
+        stompClient.subscribe('/topic/groups/' + g.groupId, payload => {
+          const msg = JSON.parse(payload.body);
+          if (currentMode == g.groupId && msg.senderId !== currentUserId) {
+            showMessage(msg.content, msg.messageId, msg.senderId, false, g.groupId);
+          }
+        });
+      });
+    }
+
+    /* ---------- SEND MESSAGE ---------- */
+    async function sendMessage() {
+      const content = document.getElementById('messageInput').value.trim();
+      if (!content) return;
+
+      if (currentMode === 'direct') {
+        await sendDirectMessage(content);
+      } else {
+        await sendGroupMessage(content);
+      }
+    }
+
+    async function sendDirectMessage(content) {
+      const receiver = Number(document.getElementById('toUserId').value);
+      if (!receiver || isNaN(receiver)) { alert('Please enter a valid receiver ID'); return; }
+
+      try {
+        let res = await fetchWithAuth('/api/chat/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ receiverId: receiver, content })
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          showMessage(saved.content, saved.messageId, currentUserId, true);
+          document.getElementById('messageInput').value = '';
+        }
+      } catch (e) { alert('Connection error'); }
+    }
+
+    async function sendGroupMessage(content) {
+      const groupId = currentMode;
+      try {
+        let res = await fetchWithAuth('/api/groups/' + groupId + '/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groupId, content })
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          showMessage(saved.content, saved.messageId, currentUserId, true, groupId);
+          document.getElementById('messageInput').value = '';
+        }
+      } catch (e) { alert('Connection error'); }
+    }
+
+    async function fetchWithAuth(url, options = {}) {
+      options.headers = options.headers || {};
+      options.headers['Authorization'] = 'Bearer ' + accessToken;
+      let res = await fetch(url, options);
+      if (res.status === 401) {
+        await refreshAccessToken();
+        options.headers['Authorization'] = 'Bearer ' + accessToken;
+        res = await fetch(url, options);
+      }
+      return res;
+    }
+
+    /* ---------- GROUPS ---------- */
+    async function loadGroups() {
+      try {
+        const res = await fetchWithAuth('/api/groups');
+        if (res.ok) {
+          userGroups = await res.json();
+          renderGroupList();
+          if (stompClient && stompClient.connected) subscribeToGroups();
+        }
+      } catch (e) {}
+    }
+
+    function renderGroupList() {
+      const list = document.getElementById('groupList');
+      list.innerHTML = '';
+      userGroups.forEach(g => {
+        const active = currentMode == g.groupId ? ' active' : '';
+        list.innerHTML += '<div class="sidebar-item' + active + '" onclick="switchToGroup(' +
+          g.groupId + ')">' + g.name + '</div>';
+      });
+    }
+
+    /* ---------- USERS ---------- */
+    async function loadUsers() {
+      try {
+        const res = await fetchWithAuth('/api/chat/users');
+        if (res.ok) {
+          allUsers = await res.json();
+          renderUserList();
+        }
+      } catch (e) {}
+    }
+
+    async function loadPresence() {
+      try {
+        const res = await fetchWithAuth('/api/chat/presence');
+        if (res.ok) {
+          userPresence = await res.json();
+          renderUserList();
+        }
+      } catch (e) {}
+    }
+
+    async function sendHeartbeat() {
+      try {
+        await fetchWithAuth('/api/chat/heartbeat', { method: 'POST' });
+      } catch (e) {}
+    }
+
+    async function sendGoOffline() {
+      try {
+        await fetchWithAuth('/api/chat/go-offline', { method: 'POST' });
+      } catch (e) {}
+    }
+
+    async function loadUnreadCounts() {
+      try {
+        const res = await fetchWithAuth('/api/chat/unread-counts');
+        if (res.ok) {
+          unreadCounts = await res.json();
+          renderUserList();
+        }
+      } catch (e) {}
+    }
+
+    function renderUserList() {
+      const list = document.getElementById('userList');
+      list.innerHTML = '';
+      allUsers.forEach(u => {
+        const active = (currentMode === 'direct' && selectedUserId === u.userId) ? ' active' : '';
+        const online = userPresence[u.userId] ? 'online' : 'offline';
+        const count = unreadCounts[u.userId] || 0;
+        const badge = count > 0 ? '<span class="unread-badge">' + count + '</span>' : '';
+        list.innerHTML += '<div class="sidebar-item' + active + '" onclick="switchToUser(' +
+          u.userId + ', \'' + u.username.replace(/'/g, "\\'") + '\')">' +
+          '<span class="status-dot ' + online + '"></span>' + u.username + badge + '</div>';
+      });
+    }
+
+    function switchToUser(userId, username) {
+      currentMode = 'direct';
+      selectedUserId = userId;
+      document.getElementById('toUserId').value = userId;
+      document.getElementById('receiverRow').classList.add('hidden');
+      document.getElementById('chatBody').innerHTML = '';
+      document.getElementById('typingIndicator').textContent = '';
+      delete unreadCounts[userId];
+      renderGroupList();
+      renderUserList();
+      loadDirectHistory(userId);
+    }
+
+    function switchToDirectChat() {
+      currentMode = 'direct';
+      selectedUserId = null;
+      document.getElementById('toUserId').value = '';
+      document.getElementById('receiverRow').classList.remove('hidden');
+      document.getElementById('chatBody').innerHTML = '';
+      renderGroupList();
+      renderUserList();
+    }
+
+    async function loadDirectHistory(otherUserId) {
+      try {
+        const res = await fetchWithAuth('/api/chat/history?otherUserId=' + otherUserId + '&page=0&size=50');
+        if (res.ok) {
+          const data = await res.json();
+          const msgs = (data.content || []).reverse();
+          msgs.forEach(m => {
+            showMessage(m.content, m.messageId, m.senderId, m.senderId === currentUserId, null, m.status, m.createdAt);
+            // Send read receipt for messages received from the other user that aren't read yet
+            if (m.senderId != currentUserId && m.status !== 'READ' && stompClient && stompClient.connected) {
+              stompClient.send('/app/read', {}, JSON.stringify({
+                messageId: m.messageId, senderId: m.senderId, receiverId: currentUserId
+              }));
+            }
+          });
+        }
+      } catch (e) {}
+    }
+
+    async function fetchOfflineMessages() {
+      try {
+        const res = await fetchWithAuth('/api/chat/offline');
+        if (res.ok) {
+          const msgs = await res.json();
+          if (msgs.length > 0) {
+            updateStatus('Connected - ' + msgs.length + ' offline message(s)', true);
+          }
+        }
+      } catch (e) {}
+    }
+
+    function switchToGroup(groupId) {
+      currentMode = groupId;
+      selectedUserId = null;
+      document.getElementById('receiverRow').classList.add('hidden');
+      document.getElementById('chatBody').innerHTML = '';
+      renderGroupList();
+      renderUserList();
+      loadGroupHistory(groupId);
+    }
+
+    async function loadGroupHistory(groupId) {
+      try {
+        const res = await fetchWithAuth('/api/groups/' + groupId + '/messages?page=0&size=50');
+        if (res.ok) {
+          const data = await res.json();
+          const msgs = (data.content || []).reverse();
+          msgs.forEach(m => {
+            showMessage(m.content, m.messageId, m.senderId, m.senderId === currentUserId, groupId, m.status, m.createdAt);
+          });
+        }
+      } catch (e) {}
+    }
+
+    function showCreateGroupModal() {
+      document.getElementById('createGroupModal').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('createGroupModal').classList.remove('show');
+      document.getElementById('groupName').value = '';
+      document.getElementById('groupMembers').value = '';
+    }
+
+    async function createGroup() {
+      const name = document.getElementById('groupName').value.trim();
+      const membersStr = document.getElementById('groupMembers').value.trim();
+      if (!name) { alert('Please enter a group name'); return; }
+
+      const memberIds = membersStr.split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0);
+
+      try {
+        const res = await fetchWithAuth('/api/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, memberIds })
+        });
+        if (res.ok) {
+          closeModal();
+          loadGroups();
+        } else {
+          alert('Failed to create group');
+        }
+      } catch (e) { alert('Connection error'); }
+    }
+
+    /* ---------- UI HELPERS ---------- */
+    function formatTime(dateVal) {
+      if (!dateVal) return '';
+      const d = (dateVal instanceof Date) ? dateVal : new Date(dateVal);
+      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function showMessage(content, messageId, senderId, isSent, groupId, status, timestamp) {
+      const chatBody = document.getElementById('chatBody');
+      const div = document.createElement('div');
+      div.className = 'message ' + (isSent ? 'sent' : 'received');
+      if (isSent && status === 'READ') div.classList.add('read');
+      div.setAttribute('data-id', messageId);
+
+      const contentDiv = document.createElement('div');
+      contentDiv.textContent = content;
+
+      const metaDiv = document.createElement('div');
+      metaDiv.className = 'message-meta';
+      const senderUser = allUsers.find(u => u.userId == senderId);
+      const senderName = isSent ? 'You' : (senderUser ? senderUser.username : 'User ' + senderId);
+      const timeStr = formatTime(timestamp || new Date());
+      metaDiv.textContent = senderName + ' \u00B7 ' + timeStr;
+
+      div.appendChild(contentDiv);
+      div.appendChild(metaDiv);
+      chatBody.appendChild(div);
+      chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
+    function markMessageAsRead(messageId) {
+      document.querySelectorAll('.message').forEach(msg => {
+        if (msg.getAttribute('data-id') == messageId) msg.classList.add('read');
+      });
+    }
+
+    function updateStatus(text, isConnected) {
+      const el = document.getElementById('status');
+      el.textContent = text;
+      el.className = 'status ' + (isConnected ? 'connected' : 'disconnected');
+    }
+
+    /* ---------- PRESENCE POLLING ---------- */
+    function startPresencePolling() {
+      if (presenceInterval) clearInterval(presenceInterval);
+      presenceInterval = setInterval(() => {
+        sendHeartbeat();
+        loadPresence();
+        loadUnreadCounts();
+      }, 10000);
+    }
+
+    /* ---------- TYPING INDICATOR ---------- */
+    function sendTypingEvent() {
+      if (!stompClient || !stompClient.connected || currentMode !== 'direct' || !selectedUserId) return;
+      const now = Date.now();
+      if (now - lastTypingSent < 2000) return;
+      lastTypingSent = now;
+      stompClient.send('/app/typing', {}, JSON.stringify({
+        senderId: currentUserId, receiverId: selectedUserId
+      }));
+    }
+
+    function showTypingIndicator(name) {
+      // Remove any existing typing message
+      const existing = document.getElementById('typingMsg');
+      if (existing) existing.remove();
+      // Add typing message to the chat body
+      const chatBody = document.getElementById('chatBody');
+      const div = document.createElement('div');
+      div.id = 'typingMsg';
+      div.style.cssText = 'padding:8px 14px;color:#888;font-style:italic;font-size:13px;background:#e0e0e0;border-radius:12px;max-width:75%;margin-bottom:12px;';
+      div.textContent = name + ' is typing...';
+      chatBody.appendChild(div);
+      chatBody.scrollTop = chatBody.scrollHeight;
+      clearTimeout(typingTimeout);
+      typingTimeout = setTimeout(() => {
+        const el = document.getElementById('typingMsg');
+        if (el) el.remove();
+      }, 3000);
+    }
+
+    // Auto-login
+    window.onload = function() {
+      const savedToken = localStorage.getItem('accessToken');
+      const savedUsername = localStorage.getItem('username');
+      if (savedToken && savedUsername) {
+        accessToken = savedToken;
+        refreshToken = localStorage.getItem('refreshToken');
+        try {
+          currentUserId = getUserIdFromToken(accessToken);
+          showChatScreen(savedUsername);
+          connect();
+          loadGroups();
+          loadUsers().then(() => { loadPresence(); loadUnreadCounts(); });
+          startPresencePolling();
+        } catch (e) {
+          localStorage.clear();
+        }
+      }
+    };
+  </script>
+</body>
+</html>

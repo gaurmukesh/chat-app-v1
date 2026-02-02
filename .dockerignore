@@ -1,0 +1,9 @@
+.git
+.gitignore
+target/
+*.md
+.idea/
+*.iml
+.vscode/
+.mvn/wrapper/maven-wrapper.jar
+k8s/
