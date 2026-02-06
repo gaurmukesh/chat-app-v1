@@ -4,6 +4,21 @@ This guide walks you through deploying the chat application to AWS using EKS (El
 
 ---
 
+## Current Deployment
+
+The application is currently deployed and running on AWS with the following configuration:
+
+| Resource          | Value                                                                          |
+|-------------------|--------------------------------------------------------------------------------|
+| EKS Cluster       | `chat-app-v1-cluster` (us-east-1, K8s 1.29)                                  |
+| ECR Repository    | `620179522575.dkr.ecr.us-east-1.amazonaws.com/chat-app-v1`                   |
+| ALB Endpoint      | `k8s-chatapp-chatappi-*.us-east-1.elb.amazonaws.com`                         |
+| RDS MySQL         | `chat-app-mysql.cod8o8ck2y1e.us-east-1.rds.amazonaws.com:3306`              |
+| ElastiCache Redis | `chat-app-redis.ybwh7f.0001.use1.cache.amazonaws.com:6379`                  |
+| MSK Kafka         | `b-{1,2}.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094` (TLS) |
+| VPC               | `vpc-070572af6742779ef`                                                       |
+| Pods              | 2 replicas (HPA: 2-10, CPU target 70%)                                       |
+
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)
@@ -90,7 +105,7 @@ aws sts get-caller-identity
 # Set variables
 export AWS_REGION=us-east-1
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export ECR_REPO=chat-app
+export ECR_REPO=chat-app-v1
 
 # Create ECR repository
 aws ecr create-repository \
@@ -113,15 +128,15 @@ aws ecr get-login-password --region $AWS_REGION | \
 ### Build the Image
 
 ```bash
-# From project root directory
-docker build -t chat-app:latest .
+# From project root directory (build for linux/amd64 for EKS)
+docker build --platform linux/amd64 -t chat-app-v1:latest .
 ```
 
 ### Tag and Push to ECR
 
 ```bash
 # Tag the image
-docker tag chat-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
+docker tag chat-app-v1:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
 
 # Push to ECR
 docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
@@ -136,7 +151,7 @@ docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:latest
 ```bash
 # Create EKS cluster (takes 15-20 minutes)
 eksctl create cluster \
-    --name chat-app-cluster \
+    --name chat-app-v1-cluster \
     --region $AWS_REGION \
     --version 1.29 \
     --nodegroup-name chat-app-nodes \
@@ -151,7 +166,7 @@ eksctl create cluster \
 
 ```bash
 # Update kubeconfig
-aws eks update-kubeconfig --name chat-app-cluster --region $AWS_REGION
+aws eks update-kubeconfig --name chat-app-v1-cluster --region $AWS_REGION
 
 # Verify connection
 kubectl get nodes
@@ -168,13 +183,13 @@ First, get your VPC and subnet information:
 ```bash
 # Get VPC ID from EKS cluster
 export VPC_ID=$(aws eks describe-cluster \
-    --name chat-app-cluster \
+    --name chat-app-v1-cluster \
     --query "cluster.resourcesVpcConfig.vpcId" \
     --output text)
 
 # Get subnet IDs
 export SUBNET_IDS=$(aws eks describe-cluster \
-    --name chat-app-cluster \
+    --name chat-app-v1-cluster \
     --query "cluster.resourcesVpcConfig.subnetIds" \
     --output text)
 
@@ -357,299 +372,178 @@ echo "Kafka Bootstrap: $KAFKA_BOOTSTRAP"
 
 ## 7. Update Kubernetes Configurations
 
-### 7.1 Create AWS-specific Configurations
+The K8s manifests in the `k8s/` directory are configured for AWS deployment. Each file contains commented-out local configuration for reference alongside the active AWS configuration.
 
-Create a new file `k8s/aws/configmap-aws.yaml`:
+### 7.1 ConfigMap (`k8s/configmap.yaml`)
+
+Points to AWS managed service endpoints:
 
 ```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: chat-app-config
-  namespace: chat-app
 data:
   SPRING_PROFILES_ACTIVE: "k8s"
-  SPRING_DATASOURCE_URL: "jdbc:mysql://YOUR_RDS_ENDPOINT:3306/chatappdb"
-  SPRING_KAFKA_BOOTSTRAP_SERVERS: "YOUR_KAFKA_BOOTSTRAP:9092"
-  SPRING_DATA_REDIS_HOST: "YOUR_REDIS_ENDPOINT"
+  # Local K8s configuration (commented out)
+  # SPRING_DATASOURCE_URL: "jdbc:mysql://mysql-service.chat-app.svc.cluster.local:3306/chat-app-database"
+  # AWS managed services configuration
+  SPRING_DATASOURCE_URL: "jdbc:mysql://chat-app-mysql.cod8o8ck2y1e.us-east-1.rds.amazonaws.com:3306/chatappdatabase"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "b-1.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094,b-2.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094"
+  SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: "SSL"
+  SPRING_DATA_REDIS_HOST: "chat-app-redis.ybwh7f.0001.use1.cache.amazonaws.com"
   SPRING_DATA_REDIS_PORT: "6379"
 ```
 
-Create a new file `k8s/aws/secret-aws.yaml`:
+### 7.2 Secret (`k8s/secret.yaml`)
+
+Contains AWS RDS credentials and JWT secret:
 
 ```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: chat-app-secrets
-  namespace: chat-app
-type: Opaque
 stringData:
-  SPRING_DATASOURCE_USERNAME: "chatadmin"
-  SPRING_DATASOURCE_PASSWORD: "YourSecurePassword123!"
-  JWT_SECRET: "your-production-jwt-secret-minimum-256-bits-long"
+  DB_USERNAME: "chatadmin"
+  DB_PASSWORD: "ChangeMe123Secure"
+  JWT_SECRET: "this-is-a-very-long-secret-key-for-hs256-algorithm!!"
 ```
 
-### 7.2 Update Deployment for ECR Image
+### 7.3 Deployment (`k8s/app-deployment.yaml`)
 
-Create a new file `k8s/aws/app-deployment-aws.yaml`:
+Uses ECR image with `Always` pull policy:
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: chat-app
-  namespace: chat-app
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: chat-app
-  template:
-    metadata:
-      labels:
-        app: chat-app
-    spec:
-      containers:
-        - name: chat-app
-          image: YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/chat-app:latest
-          ports:
-            - containerPort: 8080
-          envFrom:
-            - configMapRef:
-                name: chat-app-config
-            - secretRef:
-                name: chat-app-secrets
-          resources:
-            requests:
-              memory: "512Mi"
-              cpu: "256m"
-            limits:
-              memory: "1Gi"
-              cpu: "1000m"
-          readinessProbe:
-            httpGet:
-              path: /actuator/health
-              port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /actuator/health
-              port: 8080
-            initialDelaySeconds: 60
-            periodSeconds: 15
+image: 620179522575.dkr.ecr.us-east-1.amazonaws.com/chat-app-v1:latest
+imagePullPolicy: Always
 ```
 
-### 7.3 Quick Setup Script
+### 7.4 Ingress (`k8s/ingress.yaml`)
 
-Create a script `k8s/aws/setup-aws-configs.sh`:
+Uses AWS ALB Ingress Controller instead of nginx:
 
-```bash
-#!/bin/bash
-
-# Replace with your actual values
-RDS_ENDPOINT="your-rds-endpoint.rds.amazonaws.com"
-REDIS_ENDPOINT="your-redis-endpoint.cache.amazonaws.com"
-KAFKA_BOOTSTRAP="your-kafka-bootstrap:9092"
-AWS_ACCOUNT_ID="123456789012"
-AWS_REGION="us-east-1"
-DB_PASSWORD="YourSecurePassword123!"
-JWT_SECRET="your-production-jwt-secret-minimum-256-bits-long"
-
-# Create k8s/aws directory
-mkdir -p k8s/aws
-
-# Generate ConfigMap
-cat > k8s/aws/configmap-aws.yaml << EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: chat-app-config
-  namespace: chat-app
-data:
-  SPRING_PROFILES_ACTIVE: "k8s"
-  SPRING_DATASOURCE_URL: "jdbc:mysql://${RDS_ENDPOINT}:3306/chatappdb"
-  SPRING_KAFKA_BOOTSTRAP_SERVERS: "${KAFKA_BOOTSTRAP}"
-  SPRING_DATA_REDIS_HOST: "${REDIS_ENDPOINT}"
-  SPRING_DATA_REDIS_PORT: "6379"
-EOF
-
-# Generate Secrets
-cat > k8s/aws/secret-aws.yaml << EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: chat-app-secrets
-  namespace: chat-app
-type: Opaque
-stringData:
-  SPRING_DATASOURCE_USERNAME: "chatadmin"
-  SPRING_DATASOURCE_PASSWORD: "${DB_PASSWORD}"
-  JWT_SECRET: "${JWT_SECRET}"
-EOF
-
-# Generate Deployment
-cat > k8s/aws/app-deployment-aws.yaml << EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: chat-app
-  namespace: chat-app
+```yaml
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: chat-app
-  template:
-    metadata:
-      labels:
-        app: chat-app
-    spec:
-      containers:
-        - name: chat-app
-          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/chat-app:latest
-          ports:
-            - containerPort: 8080
-          envFrom:
-            - configMapRef:
-                name: chat-app-config
-            - secretRef:
-                name: chat-app-secrets
-          resources:
-            requests:
-              memory: "512Mi"
-              cpu: "256m"
-            limits:
-              memory: "1Gi"
-              cpu: "1000m"
-          readinessProbe:
-            httpGet:
-              path: /actuator/health
-              port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /actuator/health
-              port: 8080
-            initialDelaySeconds: 60
-            periodSeconds: 15
-EOF
-
-echo "AWS Kubernetes configs generated in k8s/aws/"
+  ingressClassName: alb
+  # Annotations: internet-facing, ip target-type, health check on /actuator/health
 ```
+
+### 7.5 Removed Local Manifests
+
+The following files were removed since AWS managed services replace in-cluster StatefulSets:
+- `mysql-statefulset.yaml`, `mysql-service.yaml` → replaced by Amazon RDS
+- `redis-statefulset.yaml`, `redis-service.yaml` → replaced by Amazon ElastiCache
+- `kafka-statefulset.yaml`, `kafka-service.yaml` → replaced by Amazon MSK
 
 ---
 
 ## 8. Deploy to EKS
 
+### Configure kubectl
+
+```bash
+aws eks update-kubeconfig --region us-east-1 --name chat-app-v1-cluster
+kubectl get nodes  # Verify connectivity
+```
+
+### Security Group Configuration
+
+EKS pods need network access to the managed services. Add inbound rules to the managed services security group allowing traffic from the EKS cluster security group:
+
+```bash
+# Get security group IDs
+EKS_SG=$(aws eks describe-cluster --name chat-app-v1-cluster --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text)
+MANAGED_SG="sg-029f1707a28f0edc9"  # Shared SG for RDS, MSK, ElastiCache
+
+# Allow MySQL (3306), Redis (6379), Kafka TLS (9094) from EKS
+aws ec2 authorize-security-group-ingress --group-id $MANAGED_SG --protocol tcp --port 3306 --source-group $EKS_SG
+aws ec2 authorize-security-group-ingress --group-id $MANAGED_SG --protocol tcp --port 6379 --source-group $EKS_SG
+aws ec2 authorize-security-group-ingress --group-id $MANAGED_SG --protocol tcp --port 9094 --source-group $EKS_SG
+```
+
 ### Step-by-Step Deployment
 
 ```bash
-# 1. Create namespace
-kubectl create namespace chat-app
+# 1. Apply namespace
+kubectl apply -f k8s/namespace.yaml
 
-# 2. Apply AWS-specific configs
-kubectl apply -f k8s/aws/configmap-aws.yaml
-kubectl apply -f k8s/aws/secret-aws.yaml
+# 2. Apply config and secrets
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
 
-# 3. Deploy the application
-kubectl apply -f k8s/aws/app-deployment-aws.yaml
-
-# 4. Apply service
+# 3. Deploy app, service, HPA, and ingress
+kubectl apply -f k8s/app-deployment.yaml
 kubectl apply -f k8s/app-service.yaml
-
-# 5. Apply HPA (Horizontal Pod Autoscaler)
 kubectl apply -f k8s/app-hpa.yaml
+kubectl apply -f k8s/ingress.yaml
 
-# 6. Verify deployment
+# 4. Verify deployment
 kubectl get pods -n chat-app
 kubectl get svc -n chat-app
+kubectl rollout status deployment/chat-app -n chat-app
 ```
 
 ---
 
-## 9. Configure Ingress
+## 9. Configure Ingress (AWS Load Balancer Controller)
 
-### Option A: AWS Load Balancer Controller (Recommended)
+### 9.1 Associate IAM OIDC Provider
 
 ```bash
-# Install AWS Load Balancer Controller
+eksctl utils associate-iam-oidc-provider \
+    --cluster chat-app-v1-cluster \
+    --region us-east-1 \
+    --approve
+```
+
+### 9.2 Create IAM Policy
+
+```bash
+# Download the latest IAM policy for the ALB controller
+curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.12.0/docs/install/iam_policy.json
+
+# Create the IAM policy
+aws iam create-policy \
+    --policy-name AWSLoadBalancerControllerIAMPolicy \
+    --policy-document file://iam_policy.json
+```
+
+**Note:** Use the v2.12.0 policy (or later) — older versions may be missing permissions like `ec2:GetSecurityGroupsForVpc` and `elasticloadbalancing:DescribeListenerAttributes`.
+
+### 9.3 Create IAM Service Account
+
+```bash
 eksctl create iamserviceaccount \
-    --cluster=chat-app-cluster \
+    --cluster=chat-app-v1-cluster \
     --namespace=kube-system \
     --name=aws-load-balancer-controller \
-    --attach-policy-arn=arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess \
-    --approve
+    --role-name AmazonEKSLoadBalancerControllerRole \
+    --attach-policy-arn=arn:aws:iam::620179522575:policy/AWSLoadBalancerControllerIAMPolicy \
+    --approve \
+    --region us-east-1
+```
 
+### 9.4 Install via Helm
+
+```bash
 helm repo add eks https://aws.github.io/eks-charts
-helm repo update
+helm repo update eks
 
 helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
     -n kube-system \
-    --set clusterName=chat-app-cluster \
+    --set clusterName=chat-app-v1-cluster \
     --set serviceAccount.create=false \
-    --set serviceAccount.name=aws-load-balancer-controller
+    --set serviceAccount.name=aws-load-balancer-controller \
+    --set region=us-east-1 \
+    --set vpcId=vpc-070572af6742779ef
 ```
 
-Create `k8s/aws/ingress-aws.yaml`:
+### 9.5 Verify ALB Provisioning
 
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: chat-app-ingress
-  namespace: chat-app
-  annotations:
-    kubernetes.io/ingress.class: alb
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
-    # WebSocket support
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
-spec:
-  rules:
-    - http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: chat-app-service
-                port:
-                  number: 8080
-```
-
-Apply ingress:
+The Ingress resource (`k8s/ingress.yaml`) is already configured for ALB. After the controller is running, it will provision an internet-facing ALB:
 
 ```bash
-kubectl apply -f k8s/aws/ingress-aws.yaml
+# Check controller is running
+kubectl get deployment aws-load-balancer-controller -n kube-system
 
-# Get ALB URL
+# Check ALB address (may take 1-2 minutes)
 kubectl get ingress -n chat-app
 ```
 
-### Option B: Simple LoadBalancer Service
-
-If you prefer a simpler setup, modify the service to use LoadBalancer type:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: chat-app-service
-  namespace: chat-app
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-spec:
-  type: LoadBalancer
-  selector:
-    app: chat-app
-  ports:
-    - port: 80
-      targetPort: 8080
-```
+The ALB URL will appear in the ADDRESS column (e.g., `k8s-chatapp-chatappi-*.us-east-1.elb.amazonaws.com`).
 
 ---
 
@@ -696,13 +590,13 @@ echo "Application URL: http://$LB_URL"
 ```bash
 # Enable Container Insights
 aws eks update-cluster-config \
-    --name chat-app-cluster \
+    --name chat-app-v1-cluster \
     --logging '{"clusterLogging":[{"types":["api","audit","authenticator","controllerManager","scheduler"],"enabled":true}]}'
 
 # Install CloudWatch agent
 curl -O https://raw.githubusercontent.com/aws-samples/amazon-cloudwatch-container-insights/latest/k8s-deployment-manifest-templates/deployment-mode/daemonset/container-insights-monitoring/quickstart/cwagent-fluentd-quickstart.yaml
 
-sed -i "s/{{cluster_name}}/chat-app-cluster/g" cwagent-fluentd-quickstart.yaml
+sed -i "s/{{cluster_name}}/chat-app-v1-cluster/g" cwagent-fluentd-quickstart.yaml
 sed -i "s/{{region_name}}/$AWS_REGION/g" cwagent-fluentd-quickstart.yaml
 
 kubectl apply -f cwagent-fluentd-quickstart.yaml
@@ -711,7 +605,7 @@ kubectl apply -f cwagent-fluentd-quickstart.yaml
 ### View Logs in CloudWatch
 
 1. Go to AWS Console > CloudWatch > Log Groups
-2. Look for `/aws/containerinsights/chat-app-cluster/application`
+2. Look for `/aws/containerinsights/chat-app-v1-cluster/application`
 
 ---
 
@@ -756,7 +650,7 @@ To avoid ongoing charges, delete all resources when done:
 kubectl delete namespace chat-app
 
 # Delete EKS cluster
-eksctl delete cluster --name chat-app-cluster --region $AWS_REGION
+eksctl delete cluster --name chat-app-v1-cluster --region $AWS_REGION
 
 # Delete RDS
 aws rds delete-db-instance \
@@ -770,7 +664,7 @@ aws elasticache delete-cache-cluster --cache-cluster-id chat-app-redis
 aws kafka delete-cluster --cluster-arn $MSK_CLUSTER_ARN
 
 # Delete ECR repository
-aws ecr delete-repository --repository-name chat-app --force
+aws ecr delete-repository --repository-name chat-app-v1 --force
 
 # Delete security groups (after services are deleted)
 aws ec2 delete-security-group --group-id $RDS_SG_ID
@@ -820,9 +714,10 @@ kubectl logs POD_NAME -n chat-app
 ```
 
 ### Cannot connect to RDS/Redis/Kafka
-- Verify security groups allow traffic from EKS nodes
-- Check VPC CIDR ranges
-- Verify endpoints in ConfigMap
+- Verify the managed services SG allows inbound from the EKS cluster SG on the correct ports (3306, 6379, 9094)
+- Check that EKS and managed services are in the same VPC (`vpc-070572af6742779ef`)
+- Verify endpoints in ConfigMap match the actual AWS service endpoints
+- For MSK, ensure `SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: "SSL"` is set (MSK uses TLS on port 9094)
 
 ### Image pull errors
 ```bash

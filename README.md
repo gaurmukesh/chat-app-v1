@@ -103,13 +103,31 @@ src/main/java/com/mg/chat_app/
 - [AWS Deployment Guide](AWS_DEPLOYMENT_GUIDE.md) - Production deployment on AWS
 - [Design Document](DESIGN_DOCUMENT.md) - System design decisions
 
-## Kubernetes Deployment
+## Deployment
 
-Kubernetes manifests are available in the `k8s/` directory.
+### AWS EKS (Production)
+
+The application is deployed on **Amazon EKS** with AWS managed services:
+- **Amazon RDS** (MySQL 8.0) — Database
+- **Amazon ElastiCache** (Redis 7.1) — Cache & Pub/Sub
+- **Amazon MSK** (Kafka 3.5.1) — Message broker
+- **AWS ALB** — Load balancer via ALB Ingress Controller
+
+Kubernetes manifests are in the `k8s/` directory (configured for AWS, local config commented out).
 
 ```bash
-kubectl apply -f k8s/
+# Deploy to EKS
+aws eks update-kubeconfig --name chat-app-v1-cluster --region us-east-1
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
+kubectl apply -f k8s/app-deployment.yaml
+kubectl apply -f k8s/app-service.yaml
+kubectl apply -f k8s/app-hpa.yaml
+kubectl apply -f k8s/ingress.yaml
 ```
+
+See [AWS Deployment Guide](AWS_DEPLOYMENT_GUIDE.md) for full setup instructions.
 
 ## License
 

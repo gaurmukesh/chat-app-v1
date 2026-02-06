@@ -74,7 +74,7 @@ A production-ready, real-time chat application supporting:
         ▼              ▼             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     INGRESS / LOAD BALANCER                         │
-│              (Nginx Ingress with WebSocket support)                 │
+│       (AWS ALB via ALB Ingress Controller on EKS)                  │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
               ┌──────────────┼──────────────┐
@@ -1439,55 +1439,97 @@ On login: `BCrypt.matches("myPassword123", storedHash)` → true/false
 
 ## 9. Deployment Architecture
 
-### 9.1 Kubernetes Cluster Layout
+### 9.1 AWS EKS Production Architecture
+
+The application is deployed on **Amazon EKS** with all stateful services offloaded to AWS managed services, eliminating the need for in-cluster StatefulSets.
+
+### 9.1.1 Cluster Layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  Namespace: chat-app                         │
-│                                                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │                   Ingress                            │    │
-│  │         (nginx, WebSocket annotations)               │    │
-│  │         Host: chat-app.local                         │    │
-│  └──────────────────────┬──────────────────────────────┘    │
-│                         │                                    │
-│  ┌──────────────────────▼──────────────────────────────┐    │
-│  │              App Service (ClusterIP)                  │    │
-│  │                  Port: 8080                           │    │
-│  └──────────────────────┬──────────────────────────────┘    │
-│                         │                                    │
-│  ┌──────────────────────▼──────────────────────────────┐    │
-│  │              App Deployment                           │    │
-│  │                                                       │    │
-│  │  ┌──────────┐  ┌──────────┐       ┌──────────┐      │    │
-│  │  │  Pod 1   │  │  Pod 2   │  ...  │  Pod N   │      │    │
-│  │  │ chat-app │  │ chat-app │       │ chat-app │      │    │
-│  │  └──────────┘  └──────────┘       └──────────┘      │    │
-│  │                                                       │    │
-│  │  HPA: 2-10 replicas, CPU target: 70%                 │    │
-│  └──────────────────────────────────────────────────────┘    │
-│                                                              │
-│  ┌────────────────┐ ┌────────────────┐ ┌─────────────────┐  │
-│  │ MySQL          │ │ Redis          │ │ Kafka            │  │
-│  │ StatefulSet    │ │ StatefulSet    │ │ StatefulSet      │  │
-│  │ 1 replica      │ │ 1 replica      │ │ 1 replica (KRaft)│  │
-│  │ 10Gi PVC       │ │ 2Gi PVC        │ │ 10Gi PVC         │  │
-│  │                │ │                │ │                   │  │
-│  │ mysql-service  │ │ redis-service  │ │ kafka-service     │  │
-│  │ (headless)     │ │ (ClusterIP)    │ │ (headless)        │  │
-│  └────────────────┘ └────────────────┘ └─────────────────┘  │
-│                                                              │
-│  ┌─────────────────┐  ┌──────────────────┐                  │
-│  │   ConfigMap     │  │     Secret       │                  │
-│  │ - DB URL        │  │ - DB_PASSWORD    │                  │
-│  │ - Redis host    │  │ - DB_USERNAME    │                  │
-│  │ - Kafka brokers │  │ - JWT_SECRET     │                  │
-│  │ - Spring profile│  │                  │                  │
-│  └─────────────────┘  └──────────────────┘                  │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              AWS (us-east-1)                                  │
+│                                                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐   │
+│  │                EKS Cluster: chat-app-v1-cluster                        │   │
+│  │                     Namespace: chat-app                                 │   │
+│  │                                                                         │   │
+│  │  ┌───────────────────────────────────────────────────────────────┐     │   │
+│  │  │                Ingress (AWS ALB)                                │     │   │
+│  │  │   ingressClassName: alb, scheme: internet-facing               │     │   │
+│  │  │   k8s-chatapp-chatappi-*.us-east-1.elb.amazonaws.com          │     │   │
+│  │  └────────────────────────────┬──────────────────────────────────┘     │   │
+│  │                                │                                        │   │
+│  │  ┌────────────────────────────▼──────────────────────────────────┐     │   │
+│  │  │              App Service (ClusterIP:8080)                       │     │   │
+│  │  └────────────────────────────┬──────────────────────────────────┘     │   │
+│  │                                │                                        │   │
+│  │  ┌────────────────────────────▼──────────────────────────────────┐     │   │
+│  │  │              App Deployment (ECR image, imagePullPolicy:Always) │     │   │
+│  │  │                                                                 │     │   │
+│  │  │  ┌──────────┐  ┌──────────┐       ┌──────────┐                │     │   │
+│  │  │  │  Pod 1   │  │  Pod 2   │  ...  │  Pod N   │                │     │   │
+│  │  │  │ chat-app │  │ chat-app │       │ chat-app │                │     │   │
+│  │  │  └──────────┘  └──────────┘       └──────────┘                │     │   │
+│  │  │                                                                 │     │   │
+│  │  │  HPA: 2-10 replicas, CPU target: 70%                           │     │   │
+│  │  └─────────────────────────────────────────────────────────────────┘     │   │
+│  │                                                                         │   │
+│  │  ┌────────────────┐  ┌────────────────┐                                │   │
+│  │  │   ConfigMap    │  │    Secret      │                                │   │
+│  │  │ - RDS endpoint │  │ - DB_USERNAME  │                                │   │
+│  │  │ - MSK brokers  │  │ - DB_PASSWORD  │                                │   │
+│  │  │ - ElastiCache  │  │ - JWT_SECRET   │                                │   │
+│  │  │ - Kafka SSL    │  │               │                                │   │
+│  │  └────────────────┘  └────────────────┘                                │   │
+│  └────────────────────────────────────────────────────────────────────────┘   │
+│                           │          │          │                              │
+│                    ┌──────┘          │          └──────┐                       │
+│                    ▼                 ▼                  ▼                       │
+│  ┌─────────────────────┐ ┌──────────────────┐ ┌───────────────────┐          │
+│  │  Amazon RDS         │ │ Amazon           │ │ Amazon MSK        │          │
+│  │  (MySQL 8.0)        │ │ ElastiCache      │ │ (Kafka 3.5.1)     │          │
+│  │  db.t3.small        │ │ (Redis 7.1)      │ │ kafka.t3.small    │          │
+│  │                     │ │ cache.t3.micro   │ │ 2 brokers         │          │
+│  │  chat-app-mysql.    │ │                  │ │                   │          │
+│  │  cod8o8ck2y1e.      │ │ chat-app-redis.  │ │ b-1.chatappkafka  │          │
+│  │  us-east-1.rds.     │ │ ybwh7f.0001.     │ │ .xo3j3c.c22.     │          │
+│  │  amazonaws.com      │ │ use1.cache.      │ │ kafka.us-east-1.  │          │
+│  │  :3306              │ │ amazonaws.com    │ │ amazonaws.com     │          │
+│  │                     │ │ :6379            │ │ :9094 (TLS)       │          │
+│  └─────────────────────┘ └──────────────────┘ └───────────────────┘          │
+│                                                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐   │
+│  │  ECR: 620179522575.dkr.ecr.us-east-1.amazonaws.com/chat-app-v1        │   │
+│  └────────────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9.2 Docker Image
+### 9.2 EKS Cluster Details
+
+| Component               | Value                                                  |
+|-------------------------|--------------------------------------------------------|
+| Cluster name            | `chat-app-v1-cluster`                                  |
+| Region                  | `us-east-1`                                            |
+| Kubernetes version      | 1.29                                                   |
+| Node count              | 2 (`t3.medium`)                                        |
+| VPC                     | `vpc-070572af6742779ef`                                |
+| Cluster security group  | `sg-0da5432b3b651a245`                                 |
+| Managed services SG     | `sg-029f1707a28f0edc9`                                 |
+| ECR repository          | `620179522575.dkr.ecr.us-east-1.amazonaws.com/chat-app-v1` |
+| ALB endpoint            | `k8s-chatapp-chatappi-*.us-east-1.elb.amazonaws.com`  |
+
+### 9.3 AWS Managed Services
+
+| Service         | AWS Product       | Endpoint                                                             | Port | Protocol |
+|-----------------|-------------------|----------------------------------------------------------------------|------|----------|
+| MySQL Database  | Amazon RDS        | `chat-app-mysql.cod8o8ck2y1e.us-east-1.rds.amazonaws.com`           | 3306 | TCP      |
+| Redis Cache     | Amazon ElastiCache| `chat-app-redis.ybwh7f.0001.use1.cache.amazonaws.com`               | 6379 | TCP      |
+| Kafka Broker 1  | Amazon MSK        | `b-1.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com`        | 9094 | TLS/SSL  |
+| Kafka Broker 2  | Amazon MSK        | `b-2.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com`        | 9094 | TLS/SSL  |
+
+**Security:** EKS pods connect to managed services via security group rules. The managed services SG (`sg-029f1707a28f0edc9`) allows inbound traffic from the EKS cluster SG (`sg-0da5432b3b651a245`) on ports 3306, 6379, and 9094.
+
+### 9.4 Docker Image
 
 ```dockerfile
 # Stage 1: Build (maven:3.9-eclipse-temurin-21)
@@ -1498,27 +1540,43 @@ COPY src → mvn clean package -DskipTests
 COPY app.jar → java -jar app.jar
 ```
 
-**Image size:** ~200MB (Alpine JRE base)
+**Image size:** ~165MB (Alpine JRE base)
+**Platform:** `linux/amd64` (EKS node architecture)
 
-### 9.3 Kubernetes Manifests
+### 9.5 Kubernetes Manifests
 
-| File                      | Kind                    | Purpose                                     |
-|---------------------------|-------------------------|---------------------------------------------|
-| `namespace.yaml`          | Namespace               | Isolate chat-app resources                  |
-| `configmap.yaml`          | ConfigMap               | Non-sensitive configuration                  |
-| `secret.yaml`             | Secret                  | DB password, JWT secret                      |
-| `app-deployment.yaml`     | Deployment (2 replicas) | Spring Boot app pods                         |
-| `app-service.yaml`        | Service (ClusterIP)     | Internal load balancing for app              |
-| `app-hpa.yaml`            | HPA                     | Auto-scale 2-10 pods at 70% CPU             |
-| `mysql-statefulset.yaml`  | StatefulSet             | MySQL with persistent volume                 |
-| `mysql-service.yaml`      | Service (Headless)      | Stable DNS for MySQL                         |
-| `redis-statefulset.yaml`  | StatefulSet             | Redis with persistent volume                 |
-| `redis-service.yaml`      | Service (ClusterIP)     | Internal access to Redis                     |
-| `kafka-statefulset.yaml`  | StatefulSet             | Kafka KRaft mode with persistent volume      |
-| `kafka-service.yaml`      | Service (Headless)      | Stable DNS for Kafka broker                  |
-| `ingress.yaml`            | Ingress                 | External access with WebSocket support       |
+| File                      | Kind                    | Purpose                                           |
+|---------------------------|-------------------------|---------------------------------------------------|
+| `namespace.yaml`          | Namespace               | Isolate chat-app resources                        |
+| `configmap.yaml`          | ConfigMap               | AWS service endpoints, Kafka SSL, Spring profile  |
+| `secret.yaml`             | Secret                  | DB credentials, JWT secret                        |
+| `app-deployment.yaml`     | Deployment (2 replicas) | Spring Boot app pods (ECR image, `Always` pull)   |
+| `app-service.yaml`        | Service (ClusterIP)     | Internal load balancing for app                   |
+| `app-hpa.yaml`            | HPA                     | Auto-scale 2-10 pods at 70% CPU                  |
+| `ingress.yaml`            | Ingress                 | AWS ALB with health check annotations             |
 
-### 9.4 Health Probes
+**Note:** Local StatefulSet/Service manifests for MySQL, Redis, and Kafka were removed — these services are provided by AWS RDS, ElastiCache, and MSK respectively.
+
+### 9.6 AWS Load Balancer Controller
+
+The AWS Load Balancer Controller provisions an internet-facing ALB from the Ingress resource.
+
+**Installation:**
+- IAM OIDC provider associated with EKS cluster
+- IAM service account `aws-load-balancer-controller` in `kube-system`
+- IAM role `AmazonEKSLoadBalancerControllerRole` with `AWSLoadBalancerControllerIAMPolicy`
+- Installed via Helm chart `eks/aws-load-balancer-controller`
+
+**ALB Configuration (via Ingress annotations):**
+
+| Annotation                                          | Value               | Purpose                          |
+|-----------------------------------------------------|---------------------|----------------------------------|
+| `alb.ingress.kubernetes.io/scheme`                 | `internet-facing`   | Public ALB                       |
+| `alb.ingress.kubernetes.io/target-type`            | `ip`                | Route directly to pod IPs        |
+| `alb.ingress.kubernetes.io/healthcheck-path`       | `/actuator/health`  | ALB health check endpoint        |
+| `alb.ingress.kubernetes.io/listen-ports`           | `[{"HTTP": 80}]`   | HTTP listener on port 80         |
+
+### 9.7 Health Probes
 
 ```yaml
 readinessProbe:
@@ -1545,12 +1603,12 @@ livenessProbe:
 
 ### 10.1 Horizontal Scaling Strategy
 
-| Component      | Scaling                  | How                                            |
-|----------------|--------------------------|-------------------------------------------------|
-| App instances  | Horizontal (2-10 pods)   | HPA based on CPU; Redis ensures shared state    |
-| Kafka          | Partition-based           | Add partitions for higher throughput             |
-| MySQL          | Vertical / Read replicas  | Single writer; add read replicas if needed      |
-| Redis          | Vertical / Sentinel       | Single instance; upgrade to Sentinel for HA     |
+| Component      | AWS Service       | Scaling                           | How                                                    |
+|----------------|-------------------|-----------------------------------|---------------------------------------------------------|
+| App instances  | EKS Pods          | Horizontal (2-10 pods)            | HPA based on CPU; Redis ensures shared state            |
+| Kafka          | Amazon MSK        | Broker count + partitions         | Add brokers/partitions via AWS console or CLI            |
+| MySQL          | Amazon RDS        | Vertical / Read replicas          | Scale instance class; add read replicas if needed       |
+| Redis          | Amazon ElastiCache| Vertical / Cluster mode           | Scale node type; enable cluster mode for HA             |
 
 ### 10.2 Why Multi-Instance Works
 
