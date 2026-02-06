@@ -17,8 +17,12 @@ spec:
     spec:
       containers:
         - name: chat-app
-          image: chat-app:latest
-          imagePullPolicy: IfNotPresent
+          # Local K8s configuration
+          # image: chat-app:latest
+          # imagePullPolicy: IfNotPresent
+          # AWS ECR configuration
+          image: 620179522575.dkr.ecr.us-east-1.amazonaws.com/chat-app-v1:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           envFrom:

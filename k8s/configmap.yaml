@@ -5,7 +5,13 @@ metadata:
   namespace: chat-app
 data:
   SPRING_PROFILES_ACTIVE: "k8s"
-  SPRING_DATASOURCE_URL: "jdbc:mysql://mysql-service.chat-app.svc.cluster.local:3306/chat-app-database"
-  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka-service.chat-app.svc.cluster.local:9092"
-  SPRING_DATA_REDIS_HOST: "redis-service.chat-app.svc.cluster.local"
+  # Local K8s configuration
+  # SPRING_DATASOURCE_URL: "jdbc:mysql://mysql-service.chat-app.svc.cluster.local:3306/chat-app-database"
+  # SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka-service.chat-app.svc.cluster.local:9092"
+  # SPRING_DATA_REDIS_HOST: "redis-service.chat-app.svc.cluster.local"
+  # AWS managed services configuration
+  SPRING_DATASOURCE_URL: "jdbc:mysql://chat-app-mysql.cod8o8ck2y1e.us-east-1.rds.amazonaws.com:3306/chatappdatabase"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "b-1.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094,b-2.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094"
+  SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: "SSL"
+  SPRING_DATA_REDIS_HOST: "chat-app-redis.ybwh7f.0001.use1.cache.amazonaws.com"
   SPRING_DATA_REDIS_PORT: "6379"

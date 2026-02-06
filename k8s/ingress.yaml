@@ -4,18 +4,30 @@ metadata:
   name: chat-app-ingress
   namespace: chat-app
   annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/websocket-services: "chat-app-service"
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
+    # Local nginx ingress configuration
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # nginx.ingress.kubernetes.io/websocket-services: "chat-app-service"
+    # nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # nginx.ingress.kubernetes.io/configuration-snippet: |
+    #   proxy_set_header Upgrade $http_upgrade;
+    #   proxy_set_header Connection "upgrade";
+    # AWS ALB ingress configuration
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
 spec:
-  ingressClassName: nginx
+  # Local: ingressClassName: nginx
+  # AWS ALB:
+  ingressClassName: alb
   rules:
-    - host: chat-app.local
-      http:
+    # Local: host: chat-app.local
+    - http:
         paths:
           - path: /
             pathType: Prefix
