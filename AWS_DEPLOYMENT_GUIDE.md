@@ -289,7 +289,7 @@ export REDIS_ENDPOINT=$(aws elasticache describe-cache-clusters \
 echo "Redis Endpoint: $REDIS_ENDPOINT"
 ```
 
-### 6.4 Create MSK (Managed Kafka) Cluster
+### 6.4 Create MSK (Managed Kafka) Cluster-Amazon Managed Streaming for Apache Kafka (Amazon MSK)
 
 ```bash
 # Create security group for MSK
