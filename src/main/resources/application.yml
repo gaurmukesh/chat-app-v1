@@ -3,9 +3,14 @@ spring:
     name: chat-app
 
   datasource:
-    url: jdbc:mysql://localhost:3307/chat-app-database
-    username: chat-app-user
-    password: dummy
+    # Local configuration
+    # url: jdbc:mysql://localhost:3307/chat-app-database
+    # username: chat-app-user
+    # password: dummy
+    # AWS RDS configuration
+    url: jdbc:mysql://chat-app-mysql.cod8o8ck2y1e.us-east-1.rds.amazonaws.com:3306/chatappdatabase
+    username: chatadmin
+    password: ChangeMe123Secure
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   jpa:
@@ -15,7 +20,12 @@ spring:
     database-platform: org.hibernate.dialect.MySQLDialect
 
   kafka:
-    bootstrap-servers: localhost:9092
+    # Local configuration
+    # bootstrap-servers: localhost:9092
+    # AWS MSK configuration
+    bootstrap-servers: b-1.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094,b-2.chatappkafka.xo3j3c.c22.kafka.us-east-1.amazonaws.com:9094
+    properties:
+      security.protocol: SSL
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
@@ -29,7 +39,10 @@ spring:
 
   data:
     redis:
-      host: localhost
+      # Local configuration
+      # host: localhost
+      # AWS ElastiCache configuration
+      host: chat-app-redis.ybwh7f.0001.use1.cache.amazonaws.com
       port: 6379
 
   web:
