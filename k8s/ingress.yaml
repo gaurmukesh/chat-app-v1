@@ -15,7 +15,9 @@ metadata:
     # AWS ALB ingress configuration
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:620179522575:certificate/9d99e508-75b8-4983-af61-951174d56dab
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
     alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
@@ -29,8 +31,8 @@ spec:
   # AWS ALB:
   ingressClassName: alb
   rules:
-    # Local: host: chat-app.local
-    - http:
+    - host: chat.mukeshg.work.gd
+      http:
         paths:
           - path: /
             pathType: Prefix
