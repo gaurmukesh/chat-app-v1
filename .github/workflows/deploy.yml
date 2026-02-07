@@ -116,6 +116,9 @@ jobs:
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
 
+      - name: Apply K8s manifests
+        run: kubectl apply -f k8s/ -n $K8S_NAMESPACE
+
       - name: Deploy to EKS
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
