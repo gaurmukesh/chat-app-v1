@@ -34,6 +34,7 @@ The application is currently deployed and running on AWS with the following conf
 11. [Monitoring & Logging](#11-monitoring--logging)
 12. [Cost Optimization Tips](#12-cost-optimization-tips)
 13. [Cleanup](#13-cleanup)
+14. [CI/CD Pipeline (GitHub Actions)](#14-cicd-pipeline-github-actions)
 
 ---
 
@@ -730,9 +731,134 @@ aws ecr describe-images --repository-name chat-app
 
 ---
 
+## 14. CI/CD Pipeline (GitHub Actions)
+
+The application has an automated CI/CD pipeline that builds, pushes to ECR, and deploys to EKS on every push to `main`.
+
+**Workflow file:** `.github/workflows/deploy.yml`
+
+### 14.1 How It Works
+
+```
+Push to main → GitHub Actions → Build Docker image → Push to ECR (SHA + latest) → kubectl set image → rollout status
+```
+
+The pipeline uses **OIDC authentication** — GitHub mints a short-lived token that assumes an IAM role, so no long-lived AWS credentials are stored in GitHub Secrets.
+
+### 14.2 One-Time AWS Setup
+
+These steps were completed during initial setup:
+
+#### 1. GitHub OIDC Provider (IAM → Identity providers)
+- Provider URL: `https://token.actions.githubusercontent.com`
+- Audience: `sts.amazonaws.com`
+
+**Note:** This is separate from the EKS OIDC provider that was auto-created by eksctl.
+
+#### 2. IAM Role: `github-actions-chat-app`
+
+**Trust policy:**
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::620179522575:oidc-provider/token.actions.githubusercontent.com"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                },
+                "StringLike": {
+                    "token.actions.githubusercontent.com:sub": "repo:gaurmukesh/chat-app-v1:*"
+                }
+            }
+        }
+    ]
+}
+```
+
+**Inline policy (`github-actions-ecr-eks-policy`):**
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage",
+                "ecr:PutImage",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload"
+            ],
+            "Resource": "arn:aws:ecr:us-east-1:620179522575:repository/chat-app-v1"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "eks:DescribeCluster",
+            "Resource": "arn:aws:eks:us-east-1:620179522575:cluster/chat-app-v1-cluster"
+        }
+    ]
+}
+```
+
+#### 3. EKS `aws-auth` ConfigMap
+
+The IAM role was added to the `aws-auth` ConfigMap in `kube-system` to grant kubectl access:
+
+```yaml
+- rolearn: arn:aws:iam::620179522575:role/github-actions-chat-app
+  username: github-actions
+  groups:
+  - system:masters
+```
+
+#### 4. GitHub Secret
+
+- `AWS_ROLE_ARN` = `arn:aws:iam::620179522575:role/github-actions-chat-app`
+
+### 14.3 Version Verification
+
+After a deploy, verify the running version:
+
+```bash
+# Check which commit SHA is deployed
+curl http://k8s-chatapp-chatappi-67c3caccb6-2060553452.us-east-1.elb.amazonaws.com/api/version
+# Returns: {"version":"<commit-sha>"}
+
+# Verify via kubectl
+kubectl describe deployment chat-app -n chat-app | grep Image
+```
+
+### 14.4 Manual Re-run
+
+```bash
+# List recent workflow runs
+gh run list --workflow=deploy.yml --limit=5
+
+# Re-run a failed workflow
+gh run rerun <run-id>
+
+# Watch a running workflow
+gh run watch
+```
+
+---
+
 ## Next Steps
 
-1. Set up CI/CD pipeline (GitHub Actions, AWS CodePipeline)
+1. ~~Set up CI/CD pipeline (GitHub Actions, AWS CodePipeline)~~ — **Done**
 2. Configure custom domain with Route 53
 3. Enable HTTPS with ACM certificate
 4. Set up backup strategies for RDS

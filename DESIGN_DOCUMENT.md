@@ -1597,6 +1597,66 @@ livenessProbe:
 **Readiness:** Pod receives traffic only when healthy.
 **Liveness:** Pod is restarted if unhealthy.
 
+### 9.8 CI/CD Pipeline (GitHub Actions)
+
+The application uses a GitHub Actions workflow that automatically builds, pushes, and deploys on every push to `main`.
+
+**File:** `.github/workflows/deploy.yml`
+
+**Authentication:** GitHub OIDC → AWS IAM role (`github-actions-chat-app`) — no long-lived credentials stored in GitHub.
+
+**Pipeline Flow:**
+
+```
+Push to main
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  GitHub Actions: build-and-deploy                    │
+│                                                       │
+│  1. Checkout code                                     │
+│  2. Configure AWS credentials (OIDC)                  │
+│  3. Login to Amazon ECR                               │
+│  4. Build Docker image                                │
+│     docker build --build-arg APP_VERSION=$SHA ...     │
+│  5. Tag with commit SHA + latest                      │
+│  6. Push both tags to ECR                             │
+│  7. Install kubectl                                   │
+│  8. Update kubeconfig for EKS                         │
+│  9. kubectl set image deployment/chat-app             │
+│     → chat-app=ECR_REPO:$SHA                         │
+│ 10. kubectl rollout status (wait up to 5 min)         │
+└─────────────────────────────────────────────────────┘
+```
+
+**Key Design Decisions:**
+
+| Decision | Rationale |
+|----------|-----------|
+| OIDC auth | No long-lived AWS credentials; GitHub mints short-lived tokens |
+| Image tagged with SHA | Ensures traceability; triggers rolling update (`:latest` alone wouldn't) |
+| `kubectl set image` | Updates deployment without modifying K8s manifests in repo |
+| `kubectl rollout status` | Fails pipeline if health checks don't pass within 5 minutes |
+| `APP_VERSION` build-arg | Injects commit SHA into container; exposed via `/api/version` endpoint |
+
+**IAM Requirements:**
+
+| Permission | Resource | Purpose |
+|------------|----------|---------|
+| `ecr:GetAuthorizationToken` | `*` | ECR login |
+| `ecr:PutImage`, `ecr:*LayerUpload`, etc. | `arn:aws:ecr:...:repository/chat-app-v1` | Push images |
+| `eks:DescribeCluster` | `arn:aws:eks:...:cluster/chat-app-v1-cluster` | Get kubeconfig |
+
+**EKS Access:** The IAM role is mapped to `system:masters` in the `aws-auth` ConfigMap, granting kubectl access to the cluster.
+
+### 9.9 Version Endpoint
+
+| Method | Path | Auth | Response |
+|--------|------|------|----------|
+| GET | `/api/version` | Public | `{"version": "<commit-sha>"}` |
+
+The commit SHA is injected at Docker build time via `APP_VERSION` build-arg → environment variable → Spring property (`app.version`). This allows verifying which exact commit is running in production.
+
 ---
 
 ## 10. Scalability & Reliability

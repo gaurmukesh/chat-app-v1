@@ -13,7 +13,8 @@
 9. [Message Delivery Guarantees](#9-message-delivery-guarantees)
 10. [Kubernetes Deployment Architecture](#10-kubernetes-deployment-architecture)
 11. [Key Architectural Decisions](#11-key-architectural-decisions)
-12. [Security Considerations for Production](#12-security-considerations-for-production)
+12. [CI/CD Pipeline](#12-cicd-pipeline)
+13. [Security Considerations for Production](#13-security-considerations-for-production)
 
 ---
 
@@ -57,7 +58,8 @@ chat-app-v1/
 │   │   ├── AuthController.java              # Registration, login, refresh
 │   │   ├── ChatRestController.java          # REST messaging endpoints
 │   │   ├── ChatWebSocketController.java     # STOMP message handlers
-│   │   └── GroupController.java             # Group CRUD & messaging
+│   │   ├── GroupController.java             # Group CRUD & messaging
+│   │   └── VersionController.java           # /api/version endpoint (commit SHA)
 │   ├── service/
 │   │   ├── ChatService.java                 # Message persistence + Kafka publish
 │   │   ├── GroupService.java                # Group management logic
@@ -110,8 +112,11 @@ chat-app-v1/
 │   ├── application.yml                      # Local dev config
 │   ├── application-k8s.yml                  # Kubernetes config
 │   └── static/chat.html                     # Frontend UI
+├── .github/
+│   └── workflows/
+│       └── deploy.yml                       # CI/CD: build, push ECR, deploy EKS
 ├── pom.xml
-├── Dockerfile                               # Multi-stage build
+├── Dockerfile                               # Multi-stage build (injects APP_VERSION)
 └── k8s/
     ├── namespace.yaml
     ├── configmap.yaml
@@ -963,7 +968,41 @@ JWT_SECRET: CHANGE_ME_use-a-long-random-secret-at-least-256-bits
 
 ---
 
-## 12. Security Considerations for Production
+## 12. CI/CD Pipeline
+
+### Overview
+
+GitHub Actions workflow (`.github/workflows/deploy.yml`) automates the full build-deploy cycle on every push to `main`.
+
+### Pipeline Steps
+
+```
+Push to main → Checkout → AWS OIDC auth → ECR login → Docker build (SHA tag + latest)
+→ Push to ECR → kubectl set image → rollout status (5 min timeout)
+```
+
+### Authentication
+
+- **GitHub → AWS:** OIDC federation (no stored credentials). GitHub mints short-lived token → assumes IAM role `github-actions-chat-app`
+- **AWS → EKS:** IAM role mapped in `aws-auth` ConfigMap with `system:masters` access
+
+### Image Tagging
+
+- Every build is tagged with the full commit SHA for traceability
+- Also tagged as `latest` for baseline
+- `kubectl set image` uses the SHA tag, which triggers a rolling update
+
+### Version Endpoint
+
+```
+GET /api/version → {"version": "<commit-sha>"}
+```
+
+The commit SHA is passed as a Docker build-arg (`APP_VERSION`) → container ENV → Spring property (`-Dapp.version`), exposed via `VersionController`.
+
+---
+
+## 13. Security Considerations for Production
 
 ### Current Strengths
 
