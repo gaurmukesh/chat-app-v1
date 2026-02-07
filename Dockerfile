@@ -11,6 +11,9 @@ FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 
+ARG APP_VERSION=unknown
+ENV APP_VERSION=${APP_VERSION}
+
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["sh", "-c", "java -Dapp.version=$APP_VERSION -jar app.jar"]

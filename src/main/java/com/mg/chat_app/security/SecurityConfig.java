@@ -41,6 +41,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/ws/info/**").permitAll()
                 .requestMatchers("/actuator/**").permitAll()
+                .requestMatchers("/api/version").permitAll()
                 .requestMatchers(HttpMethod.GET, "/", "/index.html", "/chat.html", "/static/**").permitAll()
                 .anyRequest().authenticated()
             )
