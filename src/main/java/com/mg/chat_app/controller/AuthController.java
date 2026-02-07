@@ -69,4 +69,10 @@ public class AuthController {
     public TokenResponse refresh(@Valid @RequestBody RefreshTokenRequest request) {
         return jwtService.rotateRefreshToken(request.getRefreshToken());
     }
+
+    @PostMapping("/logout")
+    public void logout(@Valid @RequestBody RefreshTokenRequest request) {
+        String userId = jwtService.extractUserId(request.getRefreshToken());
+        jwtService.revokeRefreshToken(userId);
+    }
 }

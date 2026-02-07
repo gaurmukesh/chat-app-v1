@@ -367,7 +367,17 @@
     }
 
     /* ---------- LOGOUT ---------- */
-    function logout() {
+    async function logout() {
+      // Revoke refresh token server-side
+      if (refreshToken) {
+        try {
+          await fetch('/api/auth/logout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refreshToken })
+          });
+        } catch (e) { /* proceed with local cleanup even if server call fails */ }
+      }
       sendGoOffline();
       if (stompClient) stompClient.disconnect();
       if (presenceInterval) clearInterval(presenceInterval);
