@@ -858,8 +858,12 @@ gh run watch
 
 ## Next Steps
 
-1. ~~Set up CI/CD pipeline (GitHub Actions, AWS CodePipeline)~~ — **Done**
-2. Configure custom domain with Route 53
-3. Enable HTTPS with ACM certificate
-4. Set up backup strategies for RDS
-5. Implement blue-green deployments
+1. ~~Set up CI/CD pipeline (GitHub Actions)~~ — **Done**
+2. ~~Configure custom domain (`chat.mukeshg.work.gd` via dnsexit.com DNS)~~ — **Done**
+3. ~~Enable HTTPS with ACM certificate (`arn:aws:acm:us-east-1:620179522575:certificate/9d99e508-...`)~~ — **Done**
+4. ~~Restrict CORS to production origin (`https://chat.mukeshg.work.gd`)~~ — **Done**
+5. ~~Rate limiting on auth endpoints (bucket4j + Redis, 5 req/min login, 3 req/10min register)~~ — **Done**
+6. ~~Input sanitization on chat messages (OWASP HTML sanitizer, strips all tags)~~ — **Done**
+7. ~~Refresh token rotation with Redis-backed storage (SHA-256 hash, one-time use, theft detection)~~ — **Done**
+8. Set up backup strategies for RDS
+9. Implement blue-green deployments

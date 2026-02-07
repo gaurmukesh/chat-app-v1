@@ -45,6 +45,8 @@
 - `spring-boot-starter-data-redis` — Cache & Pub/Sub
 - `jjwt` (0.11.5) — JWT token handling
 - `spring-security-crypto` — BCrypt password encoding
+- `bucket4j_jdk17-core` + `bucket4j_jdk17-lettuce` (8.16.1) — Distributed rate limiting via Redis
+- `owasp-java-html-sanitizer` (20240325.1) — HTML tag stripping for XSS prevention
 
 ---
 
@@ -63,7 +65,8 @@ chat-app-v1/
 │   ├── service/
 │   │   ├── ChatService.java                 # Message persistence + Kafka publish
 │   │   ├── GroupService.java                # Group management logic
-│   │   ├── JwtService.java                  # Token generation & validation
+│   │   ├── InputSanitizer.java              # OWASP HTML sanitization for chat messages
+│   │   ├── JwtService.java                  # Token generation, validation + Redis-backed rotation
 │   │   ├── WebSocketSessionService.java     # Session tracking in Redis
 │   │   └── RedisMessageBridge.java          # Redis Pub/Sub <-> WebSocket bridge
 │   ├── repository/
@@ -90,6 +93,7 @@ chat-app-v1/
 │   │   ├── ReadReceiptDto.java
 │   │   ├── LoginRequest.java
 │   │   ├── TokenResponse.java
+│   │   ├── RefreshTokenRequest.java         # Refresh token (validated, JSON body)
 │   │   ├── SendMessageRequest.java
 │   │   ├── CreateGroupRequest.java
 │   │   └── GroupMessageRequest.java
@@ -97,10 +101,12 @@ chat-app-v1/
 │   │   ├── WebSocketConfig.java             # STOMP + SockJS setup
 │   │   ├── WebSocketEventListener.java      # Connect/disconnect handling
 │   │   ├── RedisConfig.java                 # Redis template + listener
+│   │   ├── RateLimitConfig.java             # Bucket4j + Lettuce ProxyManager + filter registration
 │   │   └── KafkaConfig.java                 # Kafka topics
 │   ├── security/
 │   │   ├── SecurityConfig.java              # HTTP security chain
 │   │   ├── JwtAuthenticationFilter.java     # HTTP JWT filter
+│   │   ├── RateLimitFilter.java             # Per-IP rate limiting on auth endpoints
 │   │   └── WebSocketAuthInterceptor.java    # STOMP JWT interceptor
 │   ├── kafka/
 │   │   ├── ChatMessageProducer.java         # Publish to Kafka
@@ -566,12 +572,13 @@ renewPresence(userId):
 |--------|----------|-------|--------|
 | POST | `/register` | `LoginRequest {username, password}` | `TokenResponse {accessToken, refreshToken}` |
 | POST | `/login` | `LoginRequest {username, password}` | `TokenResponse {accessToken, refreshToken}` |
-| POST | `/refresh` | refresh token (plain text body) | `TokenResponse {newAccessToken, null}` |
+| POST | `/refresh` | `RefreshTokenRequest {refreshToken}` (JSON) | `TokenResponse {newAccessToken, newRefreshToken}` |
 
 Error responses:
 - 409 if username already taken (register)
-- 401 if invalid credentials (login)
+- 401 if invalid credentials (login) or invalid/reused refresh token
 - 400 if validation fails
+- 429 if rate limited (5 req/min login, 3 req/10min register per IP)
 
 #### ChatRestController (`/api/chat`)
 
@@ -610,6 +617,7 @@ Error responses:
 |-----------|-------------|------|
 | `MethodArgumentNotValidException` | 400 | Validation failure |
 | `IllegalArgumentException` | 400 | Business logic error |
+| `JwtException` | 401 | Invalid/expired/reused JWT tokens |
 | `SecurityException` | 403 | Unauthorized action |
 | `RuntimeException` | 500 | Unexpected error |
 
@@ -628,11 +636,12 @@ Response format:
 ```java
 @Transactional
 sendMessage(Message):
-    1. message.setStatus(SENT)
-    2. messageRepository.save(message)       // DB write (source of truth)
-    3. Build ChatMessageDto from saved entity
-    4. producer.publish(dto)                 // Kafka (async delivery)
-    5. Return DTO
+    1. inputSanitizer.sanitize(content)      // Strip HTML tags (XSS prevention)
+    2. message.setStatus(SENT)
+    3. messageRepository.save(message)       // DB write (source of truth)
+    4. Build ChatMessageDto from saved entity
+    5. producer.publish(dto)                 // Kafka (async delivery)
+    6. Return DTO
 ```
 
 #### GroupService
@@ -679,6 +688,21 @@ generateAccessToken(userId):
 generateRefreshToken(userId):
     - Build JWT: sub=userId, tokenType="refresh", exp=7days
     - Sign with HMAC-SHA256
+
+storeRefreshToken(userId, token):
+    - Compute SHA-256 hash of token
+    - Store in Redis: key="refresh_token:{userId}", TTL=7 days
+
+rotateRefreshToken(oldToken):
+    - Validate JWT signature and tokenType == "refresh"
+    - Check SHA-256 hash matches Redis value
+    - If mismatch → revoke (delete key) → throw JwtException (theft detection)
+    - Delete old hash, generate new access + refresh pair
+    - Store new refresh hash in Redis
+    - Return TokenResponse with both new tokens
+
+revokeRefreshToken(userId):
+    - Delete Redis key "refresh_token:{userId}"
 
 validateAccessToken(token):
     - Parse claims -> verify tokenType == "access"
@@ -1008,21 +1032,22 @@ The commit SHA is passed as a Docker build-arg (`APP_VERSION`) → container ENV
 
 - JWT with HMAC-SHA256 signing and token type differentiation
 - BCrypt password hashing with cost factor 10
+- **Refresh token rotation** with SHA-256 hash stored in Redis; one-time-use with theft detection
+- **Rate limiting** on auth endpoints via Bucket4j + Redis (5 req/min login, 3 req/10min register per IP)
+- **Input sanitization** using OWASP HTML sanitizer on all chat messages (direct + group) to prevent stored XSS
+- **JWT exception handling** via GlobalExceptionHandler mapping `JwtException` → 401
+- HTTPS/TLS via ACM certificate on ALB Ingress
+- CORS restricted to `https://chat.mukeshg.work.gd`
 - Transactional message persistence before Kafka publish
 - Authorization checks on group operations (admin validation)
 - Centralized exception handling with proper HTTP status codes
 - Stateless session management (no server-side session)
 - WebSocket authentication at STOMP protocol level
 
-### Recommendations for Production Deployment
+### Recommendations for Further Hardening
 
-- **HTTPS/TLS:** Configure TLS termination on Ingress
-- **Token revocation:** Implement blacklist mechanism for compromised tokens
-- **Rate limiting:** Add rate limits on authentication endpoints to prevent brute force
-- **CORS restriction:** Replace wildcard origin (`*`) with specific allowed domains
 - **Secret rotation:** Establish regular rotation schedule for JWT secrets and DB passwords
 - **Audit logging:** Add logging for sensitive operations (login, group admin actions)
 - **Kafka consumer lag monitoring:** Alert on growing consumer lag to detect delivery issues
-- **Input sanitization:** Validate and sanitize message content to prevent stored XSS
 - **Database connection pooling:** Configure HikariCP pool sizes for production load
 - **Redis authentication:** Enable Redis AUTH in production

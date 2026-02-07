@@ -172,6 +172,7 @@ com.mg.chat_app/
 ├── config/
 │   ├── WebSocketConfig.java             # STOMP endpoint + broker config
 │   ├── RedisConfig.java                 # RedisTemplate + Pub/Sub listener container
+│   ├── RateLimitConfig.java             # Bucket4j + Lettuce ProxyManager + filter registration
 │   └── WebSocketEventListener.java      # Connect/disconnect event handler
 │
 ├── controller/
@@ -184,6 +185,7 @@ com.mg.chat_app/
 ├── dto/
 │   ├── LoginRequest.java                # Username + password (validated)
 │   ├── TokenResponse.java               # Access + refresh token pair
+│   ├── RefreshTokenRequest.java         # Refresh token (validated, JSON body)
 │   ├── SendMessageRequest.java          # Receiver ID + content (validated)
 │   ├── ChatMessageDto.java              # Message transfer across Kafka/WebSocket
 │   ├── ReadReceiptDto.java              # Read receipt notification
@@ -211,8 +213,9 @@ com.mg.chat_app/
 │   └── GroupMemberRepository.java       # Membership queries
 │
 ├── service/
-│   ├── JwtService.java                  # Token generation + validation
+│   ├── JwtService.java                  # Token generation, validation + Redis-backed rotation
 │   ├── ChatService.java                 # Persist message + publish to Kafka
+│   ├── InputSanitizer.java              # OWASP HTML sanitization for chat messages
 │   ├── WebSocketSessionService.java     # Redis-backed session + presence tracking
 │   ├── GroupService.java                # Group management business logic
 │   └── RedisMessageBridge.java          # Redis Pub/Sub bridge for WebSocket delivery
@@ -225,6 +228,7 @@ com.mg.chat_app/
 └── security/
     ├── SecurityConfig.java              # HTTP security + BCrypt + filter chain
     ├── JwtAuthenticationFilter.java     # HTTP request JWT validation
+    ├── RateLimitFilter.java             # Per-IP rate limiting on auth endpoints
     └── WebSocketAuthInterceptor.java    # STOMP CONNECT JWT validation
 ```
 
@@ -274,13 +278,15 @@ com.mg.chat_app/
 ├──────────────────────────────┤
 │ - messageRepository          │
 │ - producer                   │
+│ - inputSanitizer             │
 ├──────────────────────────────┤
 │ + sendMessage(Message): Dto  │
-│   1. Set status = SENT       │
-│   2. Save to DB              │
-│   3. Build DTO               │
-│   4. Publish to Kafka        │
-│   5. Return DTO              │
+│   1. Sanitize content (HTML) │
+│   2. Set status = SENT       │
+│   3. Save to DB              │
+│   4. Build DTO               │
+│   5. Publish to Kafka        │
+│   6. Return DTO              │
 └──────────────────────────────┘
 
 ┌──────────────────────────────┐
@@ -299,20 +305,29 @@ com.mg.chat_app/
 │ - validateAdmin(...)         │
 └──────────────────────────────┘
 
-┌──────────────────────────────┐
-│     JwtService               │
-├──────────────────────────────┤
-│ - key (HMAC from secret)     │
-│ - accessExpiryMs             │
-│ - refreshExpiryMs            │
-├──────────────────────────────┤
-│ + generateAccessToken(uid)   │
-│ + generateRefreshToken(uid)  │
-│ + extractUserId(token)       │
-│ + validateAccessToken(token) │
-│ + validateRefreshToken(token)│
-│ - parseClaims(token)         │
-└──────────────────────────────┘
+┌──────────────────────────────────┐
+│     JwtService                   │
+├──────────────────────────────────┤
+│ - key (HMAC from secret)         │
+│ - accessExpiryMs                 │
+│ - refreshExpiryMs                │
+│ - redisTemplate                  │
+├──────────────────────────────────┤
+│ + generateAccessToken(uid)       │
+│ + generateRefreshToken(uid)      │
+│ + storeRefreshToken(uid, token)  │
+│   → SHA-256 hash → Redis w/ TTL │
+│ + rotateRefreshToken(oldToken)   │
+│   → validate → check hash →     │
+│     delete old → issue new pair  │
+│ + revokeRefreshToken(uid)        │
+│   → delete from Redis            │
+│ + extractUserId(token)           │
+│ + validateAccessToken(token)     │
+│ + validateRefreshToken(token)    │
+│ - parseClaims(token)             │
+│ - sha256(input)                  │
+└──────────────────────────────────┘
 
 ┌──────────────────────────────────┐
 │   WebSocketSessionService        │
@@ -372,7 +387,7 @@ com.mg.chat_app/
 |--------|-------------------|--------------------------------------------------|
 | POST   | /api/auth/register | Create new user with BCrypt-hashed password       |
 | POST   | /api/auth/login    | Verify credentials, return access + refresh token |
-| POST   | /api/auth/refresh  | Exchange refresh token for new access token       |
+| POST   | /api/auth/refresh  | Rotate refresh token, return new token pair       |
 
 **Register Flow:**
 1. Validate `LoginRequest` (username + password both `@NotBlank`)
@@ -380,19 +395,26 @@ com.mg.chat_app/
 3. Hash password with BCrypt (`passwordEncoder.encode()`)
 4. Save `User` entity to MySQL
 5. Generate access token (15 min) and refresh token (7 days)
-6. Return `TokenResponse` with both tokens
+6. Store refresh token SHA-256 hash in Redis with 7-day TTL
+7. Return `TokenResponse` with both tokens
 
 **Login Flow:**
 1. Validate `LoginRequest`
 2. Look up user by username → 401 if not found
 3. Verify password with BCrypt (`passwordEncoder.matches()`)
-4. Generate and return tokens
+4. Generate tokens and store refresh token hash in Redis
+5. Return `TokenResponse` with both tokens
 
-**Refresh Flow:**
-1. Parse refresh token, validate it's a refresh type (has `tokenType: "refresh"` claim)
-2. Extract userId from token
-3. Generate new access token only
-4. Return `TokenResponse` with new access token
+**Refresh Flow (Token Rotation):**
+1. Accept `RefreshTokenRequest` JSON body (`{"refreshToken": "..."}`)
+2. Validate JWT signature and `tokenType: "refresh"` claim
+3. Compute SHA-256 hash of the token
+4. Check Redis key `refresh_token:{userId}` — hash must match stored value
+5. If mismatch → token already rotated (possible theft) → revoke and return 401
+6. Delete old hash from Redis
+7. Generate new access + refresh token pair
+8. Store new refresh token hash in Redis
+9. Return `TokenResponse` with both new tokens
 
 #### 4.1.2 JwtService
 
@@ -566,6 +588,9 @@ All subsequent STOMP frames have access to Principal
 **sendMessage() Flow:**
 ```
 Message (from controller)
+    │
+    ▼
+inputSanitizer.sanitize(content)   ← Strip HTML tags (XSS prevention)
     │
     ▼
 Set status = SENT
@@ -886,6 +911,7 @@ Redis Keys:  presence:{userId}
 |-----------------------------------|-------------|-----------------------------------|
 | `MethodArgumentNotValidException` | 400         | `@Valid` validation failures       |
 | `IllegalArgumentException`        | 400         | Bad business logic input           |
+| `JwtException`                    | 401         | Invalid/expired/reused JWT tokens  |
 | `SecurityException`               | 403         | Unauthorized group operations      |
 | `RuntimeException`                | 500         | Unexpected errors (logged)         |
 
@@ -904,35 +930,43 @@ Redis Keys:  presence:{userId}
 ### 5.1 User Registration Flow
 
 ```
-Client                    AuthController           UserRepo        JwtService
-  │                            │                      │                │
-  │ POST /api/auth/register    │                      │                │
-  │ {username, password}       │                      │                │
-  │───────────────────────────▶│                      │                │
-  │                            │                      │                │
-  │                            │ findByUsername()      │                │
-  │                            │─────────────────────▶│                │
-  │                            │     Optional.empty()  │                │
-  │                            │◀─────────────────────│                │
-  │                            │                      │                │
-  │                            │ BCrypt.encode(pass)   │                │
-  │                            │ save(User)            │                │
-  │                            │─────────────────────▶│                │
-  │                            │     User(id=1)       │                │
-  │                            │◀─────────────────────│                │
-  │                            │                      │                │
-  │                            │ generateAccessToken("1")              │
-  │                            │──────────────────────────────────────▶│
-  │                            │                    accessToken        │
-  │                            │◀──────────────────────────────────────│
-  │                            │ generateRefreshToken("1")             │
-  │                            │──────────────────────────────────────▶│
-  │                            │                   refreshToken        │
-  │                            │◀──────────────────────────────────────│
-  │                            │                      │                │
-  │ 200 {accessToken,          │                      │                │
-  │      refreshToken}         │                      │                │
-  │◀───────────────────────────│                      │                │
+Client                    AuthController           UserRepo        JwtService        Redis
+  │                            │                      │                │               │
+  │ POST /api/auth/register    │                      │                │               │
+  │ {username, password}       │                      │                │               │
+  │───────────────────────────▶│                      │                │               │
+  │                            │                      │                │               │
+  │                            │ findByUsername()      │                │               │
+  │                            │─────────────────────▶│                │               │
+  │                            │     Optional.empty()  │                │               │
+  │                            │◀─────────────────────│                │               │
+  │                            │                      │                │               │
+  │                            │ BCrypt.encode(pass)   │                │               │
+  │                            │ save(User)            │                │               │
+  │                            │─────────────────────▶│                │               │
+  │                            │     User(id=1)       │                │               │
+  │                            │◀─────────────────────│                │               │
+  │                            │                      │                │               │
+  │                            │ generateAccessToken("1")              │               │
+  │                            │──────────────────────────────────────▶│               │
+  │                            │                    accessToken        │               │
+  │                            │◀──────────────────────────────────────│               │
+  │                            │ generateRefreshToken("1")             │               │
+  │                            │──────────────────────────────────────▶│               │
+  │                            │                   refreshToken        │               │
+  │                            │◀──────────────────────────────────────│               │
+  │                            │                      │                │               │
+  │                            │ storeRefreshToken("1", refreshToken)  │               │
+  │                            │──────────────────────────────────────▶│               │
+  │                            │                      │                │ SET           │
+  │                            │                      │                │ refresh_token │
+  │                            │                      │                │ :1 <sha256>   │
+  │                            │                      │                │ EX 7days      │
+  │                            │                      │                │──────────────▶│
+  │                            │                      │                │               │
+  │ 200 {accessToken,          │                      │                │               │
+  │      refreshToken}         │                      │                │               │
+  │◀───────────────────────────│                      │                │               │
 ```
 
 ### 5.2 Direct Message — End-to-End Flow
@@ -1186,10 +1220,13 @@ CREATE TABLE group_members (
 
 ### 6.3 Redis Data Structures
 
-| Key/Pattern          | Type    | Value               | TTL      | Purpose                      |
-|---------------------|---------|---------------------|----------|------------------------------|
-| `ws:sessions`       | Hash    | `{userId: sessionId}` | None   | Track which users are connected |
-| `presence:{userId}` | String  | `"ONLINE"`          | 5 min    | Real-time online status       |
+| Key/Pattern                | Type    | Value                 | TTL      | Purpose                              |
+|---------------------------|---------|----------------------|----------|--------------------------------------|
+| `ws:sessions`             | Hash    | `{userId: sessionId}` | None    | Track which users are connected      |
+| `presence:{userId}`       | String  | `"ONLINE"`           | 5 min    | Real-time online status              |
+| `refresh_token:{userId}`  | String  | SHA-256 hash         | 7 days   | Refresh token rotation (one-time use)|
+| `rate_limit:login:{ip}`   | Binary  | Bucket4j bucket state | 15 min  | Login rate limit (5 req/min per IP)  |
+| `rate_limit:register:{ip}`| Binary  | Bucket4j bucket state | 15 min  | Register rate limit (3 req/10min per IP) |
 
 ### 6.4 Kafka Topics
 
@@ -1239,15 +1276,22 @@ CREATE TABLE group_members (
 **Errors:** 401 (invalid credentials)
 
 #### POST /api/auth/refresh
-**Request Body (plain text):** `<refresh token string>`
-
+**Request:**
+```json
+{
+    "refreshToken": "eyJhbGciOiJIUzI1NiJ9..."
+}
+```
 **Response (200):**
 ```json
 {
     "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
-    "refreshToken": null
+    "refreshToken": "eyJhbGciOiJIUzI1NiJ9..."
 }
 ```
+**Errors:** 401 (token already rotated/revoked, expired, or invalid)
+
+**Note:** Each refresh token can only be used once. On success, a new token pair is issued. Reusing an already-rotated token revokes the session (theft detection).
 
 ### 7.2 Chat APIs (Require Authorization: Bearer \<token\>)
 
@@ -1366,7 +1410,7 @@ CREATE TABLE group_members (
 
 ## 8. Security Architecture
 
-### 8.1 Authentication Flow
+### 8.1 Authentication Flow (with Refresh Token Rotation)
 
 ```
                     ┌─────────────────────────────────────────────┐
@@ -1381,6 +1425,8 @@ CREATE TABLE group_members (
                     │  │ type:access │    │ type:refresh │         │
                     │  └──────┬──────┘    └──────┬───────┘         │
                     │         │                   │                 │
+                    │         │            SHA-256 hash stored      │
+                    │         │            in Redis with TTL        │
                     │         ▼                   │                 │
                     │  Used for:                  │                 │
                     │  • REST API calls           │                 │
@@ -1391,10 +1437,20 @@ CREATE TABLE group_members (
                     │         │                   │                 │
                     │         ▼                   ▼                 │
                     │  POST /api/auth/refresh ◀───┘                │
+                    │  (sends JSON body)                            │
                     │         │                                     │
                     │         ▼                                     │
-                    │  New access token issued                      │
-                    │  (refresh token unchanged)                    │
+                    │  Validate hash matches Redis                  │
+                    │         │                                     │
+                    │    ┌────┴────┐                                │
+                    │    │ Match?  │                                │
+                    │    └────┬────┘                                │
+                    │    Yes  │  No → 401 (revoke, possible theft)  │
+                    │         ▼                                     │
+                    │  Delete old hash from Redis                   │
+                    │  Issue NEW access + refresh tokens            │
+                    │  Store new refresh hash in Redis              │
+                    │  (old refresh token is now invalid)           │
                     │                                               │
                     │  Refresh token expires → user must re-login   │
                     └─────────────────────────────────────────────┘
@@ -1405,13 +1461,16 @@ CREATE TABLE group_members (
 | Layer              | Component                    | Protection                          |
 |-------------------|------------------------------|-------------------------------------|
 | Transport         | HTTPS (via Ingress TLS)       | Encryption in transit               |
+| Rate Limiting     | RateLimitFilter + Bucket4j    | 5 req/min login, 3 req/10min register per IP |
 | Authentication    | JwtAuthenticationFilter       | JWT validation on HTTP requests     |
 | Authentication    | WebSocketAuthInterceptor      | JWT validation on WS CONNECT        |
+| Token Rotation    | JwtService + Redis            | One-time-use refresh tokens, theft detection |
 | Authorization     | Spring Security filter chain  | Role-based endpoint access          |
 | Authorization     | ChatWebSocketController       | Receiver-only read receipts         |
 | Authorization     | GroupController/GroupService   | Admin-only member management        |
 | Authorization     | GroupController                | Member-only group messaging         |
 | Password          | BCryptPasswordEncoder         | Salted hash (cost factor 10)        |
+| Input Sanitization| InputSanitizer (OWASP)        | Strip all HTML tags from messages   |
 | Input validation  | Bean Validation annotations   | @NotBlank, @NotNull, @Size          |
 | Token separation  | tokenType claim               | Prevent refresh as access token     |
 | Secret management | application.yml / K8s Secret  | Externalized JWT secret             |
