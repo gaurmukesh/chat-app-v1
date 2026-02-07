@@ -26,6 +26,7 @@ import com.mg.chat_app.model.MessageStatus;
 import com.mg.chat_app.model.MessageType;
 import com.mg.chat_app.repository.MessageRepository;
 import com.mg.chat_app.service.GroupService;
+import com.mg.chat_app.service.InputSanitizer;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,7 @@ public class GroupController {
     private final GroupService groupService;
     private final MessageRepository messageRepository;
     private final ChatMessageProducer producer;
+    private final InputSanitizer inputSanitizer;
 
     @PostMapping
     public GroupDto createGroup(@Valid @RequestBody CreateGroupRequest req, Principal principal) {
@@ -79,7 +81,7 @@ public class GroupController {
 
         Message msg = Message.builder()
                 .senderId(senderId)
-                .content(req.getContent())
+                .content(inputSanitizer.sanitize(req.getContent()))
                 .groupId(groupId)
                 .messageType(MessageType.GROUP)
                 .status(MessageStatus.SENT)

@@ -17,9 +17,11 @@ public class ChatService {
 
     private final MessageRepository messageRepository;
     private final ChatMessageProducer producer;
+    private final InputSanitizer inputSanitizer;
 
     @Transactional
     public ChatMessageDto sendMessage(Message message) {
+        message.setContent(inputSanitizer.sanitize(message.getContent()));
         message.setStatus(MessageStatus.SENT);
         Message saved = messageRepository.save(message);
 

@@ -399,13 +399,15 @@
       try {
         const res = await fetch('/api/auth/refresh', {
           method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: refreshToken
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken })
         });
         if (res.ok) {
           const data = await res.json();
           accessToken = data.accessToken;
+          refreshToken = data.refreshToken;
           localStorage.setItem('accessToken', accessToken);
+          localStorage.setItem('refreshToken', refreshToken);
           return true;
         } else {
           logout();

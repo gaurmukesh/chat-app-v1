@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.mg.chat_app.dto.LoginRequest;
+import com.mg.chat_app.dto.RefreshTokenRequest;
 import com.mg.chat_app.dto.TokenResponse;
 import com.mg.chat_app.entity.User;
 import com.mg.chat_app.repository.UserRepository;
@@ -42,9 +43,10 @@ public class AuthController {
         user = userRepository.save(user);
 
         String userId = user.getUserId().toString();
-        return new TokenResponse(
-                jwtService.generateAccessToken(userId),
-                jwtService.generateRefreshToken(userId));
+        String accessToken = jwtService.generateAccessToken(userId);
+        String refreshToken = jwtService.generateRefreshToken(userId);
+        jwtService.storeRefreshToken(userId, refreshToken);
+        return new TokenResponse(accessToken, refreshToken);
     }
 
     @PostMapping("/login")
@@ -57,16 +59,14 @@ public class AuthController {
         }
 
         String userId = user.getUserId().toString();
-        return new TokenResponse(
-                jwtService.generateAccessToken(userId),
-                jwtService.generateRefreshToken(userId));
+        String accessToken = jwtService.generateAccessToken(userId);
+        String refreshToken = jwtService.generateRefreshToken(userId);
+        jwtService.storeRefreshToken(userId, refreshToken);
+        return new TokenResponse(accessToken, refreshToken);
     }
 
     @PostMapping("/refresh")
-    public TokenResponse refresh(@RequestBody String refreshToken) {
-        String userId = jwtService.validateRefreshToken(refreshToken.trim());
-        return new TokenResponse(
-                jwtService.generateAccessToken(userId),
-                null);
+    public TokenResponse refresh(@Valid @RequestBody RefreshTokenRequest request) {
+        return jwtService.rotateRefreshToken(request.getRefreshToken());
     }
 }
