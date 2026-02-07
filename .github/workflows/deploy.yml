@@ -1,0 +1,129 @@
+# CI/CD Pipeline: Build, push to ECR, and deploy to EKS
+#
+# Prerequisites (one-time manual AWS setup):
+#
+# 1. Create OIDC Identity Provider in AWS IAM:
+#    - Provider URL: https://token.actions.githubusercontent.com
+#    - Audience: sts.amazonaws.com
+#
+# 2. Create IAM Role "github-actions-chat-app" with this trust policy:
+#    {
+#      "Version": "2012-10-17",
+#      "Statement": [
+#        {
+#          "Effect": "Allow",
+#          "Principal": {
+#            "Federated": "arn:aws:iam::620179522575:oidc-provider/token.actions.githubusercontent.com"
+#          },
+#          "Action": "sts:AssumeRoleWithWebIdentity",
+#          "Condition": {
+#            "StringEquals": {
+#              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+#            },
+#            "StringLike": {
+#              "token.actions.githubusercontent.com:sub": "repo:<your-github-org>/<your-repo>:ref:refs/heads/main"
+#            }
+#          }
+#        }
+#      ]
+#    }
+#
+# 3. Attach this inline policy to the role:
+#    {
+#      "Version": "2012-10-17",
+#      "Statement": [
+#        {
+#          "Effect": "Allow",
+#          "Action": [
+#            "ecr:GetAuthorizationToken"
+#          ],
+#          "Resource": "*"
+#        },
+#        {
+#          "Effect": "Allow",
+#          "Action": [
+#            "ecr:BatchCheckLayerAvailability",
+#            "ecr:GetDownloadUrlForLayer",
+#            "ecr:BatchGetImage",
+#            "ecr:PutImage",
+#            "ecr:InitiateLayerUpload",
+#            "ecr:UploadLayerPart",
+#            "ecr:CompleteLayerUpload"
+#          ],
+#          "Resource": "arn:aws:ecr:us-east-1:620179522575:repository/chat-app-v1"
+#        },
+#        {
+#          "Effect": "Allow",
+#          "Action": [
+#            "eks:DescribeCluster"
+#          ],
+#          "Resource": "arn:aws:eks:us-east-1:620179522575:cluster/chat-app-v1-cluster"
+#        }
+#      ]
+#    }
+#
+# 4. Add GitHub repo secret:
+#    AWS_ROLE_ARN = arn:aws:iam::620179522575:role/github-actions-chat-app
+
+name: Deploy to EKS
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: chat-app-v1
+  EKS_CLUSTER: chat-app-v1-cluster
+  K8S_NAMESPACE: chat-app
+  K8S_DEPLOYMENT: chat-app
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          kubectl set image deployment/$K8S_DEPLOYMENT \
+            $K8S_DEPLOYMENT=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -n $K8S_NAMESPACE
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE --timeout=300s
